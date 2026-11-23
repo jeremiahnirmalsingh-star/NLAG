@@ -23,6 +23,12 @@ const KINDS = {
     entity: 'item',
     folder: 'items',
   },
+  'po-reference-photo': {
+    table: 'po_reference_photos',
+    permission: 'po.view',
+    entity: 'purchase_order',
+    folder: 'po-reference-photos',
+  },
 };
 
 module.exports = function registerFileRoutes(router) {

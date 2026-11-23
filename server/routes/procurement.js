@@ -638,6 +638,12 @@ module.exports = function registerProcurementRoutes(router) {
           data.itemType, data.reorderLevel, data.minStock, data.maxStock, data.standardCost,
           data.trackInventory, data.trackAsset, data.active, now, id
         );
+      /* Permanent safeguard: an item master rename must never leave a PO line
+         with a different item name. Keep every linked line in step so POs and
+         the master stay aligned (audited by the item UPDATE entry below). */
+      if (data.name !== existing.name) {
+        ctx.db.prepare('UPDATE po_items SET item_name = ? WHERE item_id = ?').run(data.name, id);
+      }
       if (details) saveItemDetails(ctx.db, id, details, now);
       if (vendors) saveItemVendors(ctx.db, id, vendors, now);
       if (componentRows) components.saveItemComponents(ctx.db, id, componentRows, now);

@@ -9,6 +9,7 @@
  */
 
 const auth = require('../auth');
+const { inUseMessage } = require('../shared-masters');
 const { HttpError } = require('../http');
 const {
   audit, nowIso, nextEmployeeCode, badRequest, round2,
@@ -652,6 +653,50 @@ module.exports = function registerProcurementMasterRoutes(router) {
     return { employee: employeeOut(getEmployee(ctx, ctx.params.id)) };
   });
 
+  /* A driving qualification is an additive profile on the common employee
+     master. Fleet Desk reads the same rows instead of keeping a driver master. */
+  router.get('/api/procurement/employees/:id/driver-profile', async (ctx) => {
+    auth.guard(ctx.user, 'employee.view');
+    const employee = getEmployee(ctx, ctx.params.id);
+    const row = ctx.db
+      .prepare('SELECT * FROM employee_driver_profiles WHERE employee_id = ?')
+      .get(employee.id);
+    return {
+      driverProfile: {
+        isDriver: !!row && !!row.active,
+        licenseNo: row ? row.license_no || '' : '',
+        licenseExpiry: row ? row.license_expiry || '' : '',
+      },
+    };
+  });
+
+  router.put('/api/procurement/employees/:id/driver-profile', async (ctx) => {
+    auth.guard(ctx.user, 'employee.manage');
+    const employee = getEmployee(ctx, ctx.params.id);
+    const b = ctx.body || {};
+    const isDriver = !!b.isDriver;
+    const licenseNo = String(b.licenseNo || '').trim().slice(0, 60);
+    const licenseExpiry = String(b.licenseExpiry || '').trim().slice(0, 10);
+    if (isDriver && !licenseNo) throw badRequest('Licence number is required when an employee is marked as a driver.');
+    const now = nowIso();
+    ctx.db
+      .prepare(
+        `INSERT INTO employee_driver_profiles(employee_id, license_no, license_expiry, active, created_at, updated_at)
+         VALUES (?,?,?,?,?,?)
+         ON CONFLICT(employee_id) DO UPDATE SET
+           license_no = excluded.license_no,
+           license_expiry = excluded.license_expiry,
+           active = excluded.active,
+           updated_at = excluded.updated_at`
+      )
+      .run(employee.id, licenseNo, licenseExpiry || null, isDriver ? 1 : 0, now, now);
+    audit(
+      ctx, 'UPDATE', 'employee_driver_profile', employee.id,
+      null, { isDriver, licenseNo, licenseExpiry }
+    );
+    return { ok: true };
+  });
+
   router.post('/api/procurement/employees', async (ctx) => {
     auth.guard(ctx.user, 'employee.manage');
     const data = employeePayload(ctx, ctx.body || {});
@@ -686,6 +731,10 @@ module.exports = function registerProcurementMasterRoutes(router) {
     auth.guard(ctx.user, 'employee.manage');
     const existing = getEmployee(ctx, ctx.params.id);
     const data = employeePayload(ctx, ctx.body || {}, existing);
+    if (data.status !== existing.status) {
+      const inUse = inUseMessage(ctx.db, 'employee', existing.id);
+      if (inUse) throw new HttpError(409, inUse);
+    }
     const code = data.employeeCode || existing.employee_code;
     if (code !== existing.employee_code) {
       const dup = ctx.db.prepare('SELECT id FROM employees WHERE employee_code = ? AND id <> ?').get(code, existing.id);
@@ -710,6 +759,8 @@ module.exports = function registerProcurementMasterRoutes(router) {
   router.delete('/api/procurement/employees/:id', async (ctx) => {
     auth.guard(ctx.user, 'employee.manage');
     const existing = getEmployee(ctx, ctx.params.id);
+    const inUse = inUseMessage(ctx.db, 'employee', existing.id);
+    if (inUse) throw new HttpError(409, inUse);
     const reports = ctx.db
       .prepare('SELECT COUNT(*) AS c FROM employees WHERE reporting_manager_id = ? AND deleted_at IS NULL')
       .get(existing.id).c;

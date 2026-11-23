@@ -719,6 +719,12 @@ const PERMISSIONS = [
   ['workflow.manage', 'Administration', 'Configure approval workflow'],
   ['settings.manage', 'Administration', 'Manage system settings'],
   ['audit.view', 'Administration', 'View audit trail'],
+
+  /* Fleet Desk */
+  ['fleet.view', 'Fleet Desk', 'View vehicle bookings and fleet masters'],
+  ['fleet.booking.create', 'Fleet Desk', 'Request a vehicle for a trip'],
+  ['fleet.booking.manage', 'Fleet Desk', 'Assign vehicles and drivers, reject and complete trips'],
+  ['fleet.master.manage', 'Fleet Desk', 'Maintain vehicles, drivers, departments and areas'],
 ];
 
 const ROLE_DEFS = [
@@ -906,6 +912,33 @@ for (const def of ROLE_DEFS) {
   const role = findRole.get(def.code);
   const perms = def.permissions.includes('*') ? allPermissions : def.permissions;
   for (const p of perms) grant.run(role.id, p);
+}
+
+/* Fleet Desk grants are additive and repeat-safe. Administrators act as the
+   transport incharge; ordinary staff can view and raise booking requests. */
+const FLEET_VIEW = ['fleet.view'];
+const FLEET_STAFF = ['fleet.view', 'fleet.booking.create'];
+const FLEET_INCHARGE = [
+  'fleet.view', 'fleet.booking.create', 'fleet.booking.manage', 'fleet.master.manage',
+];
+const FLEET_GRANTS = {
+  admin_user: FLEET_INCHARGE,
+  administrator: FLEET_INCHARGE,
+  dept_approver: FLEET_STAFF,
+  admin_assistant: FLEET_STAFF,
+  admin_pastor: FLEET_VIEW,
+  accounts_viewer: FLEET_VIEW,
+  staff: FLEET_STAFF,
+  department_head: FLEET_STAFF,
+  store_incharge: FLEET_STAFF,
+  procurement_officer: FLEET_STAFF,
+  asset_custodian: FLEET_STAFF,
+  senior_management: FLEET_VIEW,
+  auditor: FLEET_VIEW,
+};
+for (const [code, permissions] of Object.entries(FLEET_GRANTS)) {
+  const role = findRole.get(code);
+  if (role) for (const permission of permissions) grant.run(role.id, permission);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1290,5 +1323,12 @@ syncSequenceFloor('handover', 'handovers', 'handover_no', 'HND', true);
 /* Additive procurement / inventory / asset foundation                 */
 /* ------------------------------------------------------------------ */
 require('./procurement/schema').ensureProcurementSchema(db);
+
+/* Additive Fleet Desk module schema (vehicle booking and trip management). */
+require('./fleet/schema').ensureFleetSchema(db);
+
+/* Additive shared services used by core, Procurement and Fleet Desk. */
+require('./common/schema').ensureCommonSchema(db);
+require('./common/masters-schema').ensureCommonMastersSchema(db);
 
 module.exports = { db, DATA_DIR, DB_FILE };

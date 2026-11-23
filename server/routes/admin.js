@@ -1,6 +1,7 @@
 'use strict';
 
 const auth = require('../auth');
+const { inUseMessage } = require('../shared-masters');
 const { HttpError } = require('../http');
 const { audit, nowIso, getSettings, setSetting, round2 } = require('../util');
 const { ensureFallbackChain } = require('../workflow');
@@ -387,6 +388,10 @@ module.exports = function registerAdminRoutes(router) {
     if (!cleanName) throw new HttpError(400, 'Department name is required.');
     const cleanCode = uniqueDeptCode(ctx.db, code === undefined ? dept.code : code, id);
     const cleanActive = active === undefined ? dept.active : (active ? 1 : 0);
+    if (!cleanActive && dept.active) {
+      const inUse = inUseMessage(ctx.db, 'department', id);
+      if (inUse) throw new HttpError(409, inUse);
+    }
     try {
       ctx.db
         .prepare('UPDATE departments SET name = ?, code = ?, active = ? WHERE id = ?')
@@ -405,6 +410,8 @@ module.exports = function registerAdminRoutes(router) {
     const id = Number(ctx.params.id);
     const dept = ctx.db.prepare('SELECT * FROM departments WHERE id = ?').get(id);
     if (!dept) throw new HttpError(404, 'Department not found.');
+    const inUse = inUseMessage(ctx.db, 'department', id);
+    if (inUse) throw new HttpError(409, inUse);
     // Check if any bills use this department
     const billCount = ctx.db.prepare('SELECT COUNT(*) AS c FROM bills WHERE department_id = ?').get(id).c;
     if (billCount > 0) {

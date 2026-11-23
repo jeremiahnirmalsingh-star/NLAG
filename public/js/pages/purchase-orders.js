@@ -1028,6 +1028,8 @@ export async function renderDetail(ctx, options = {}) {
   const items = detail.items || [];
   const grns = detail.grns || [];
   const invoices = detail.invoices || [];
+  const photos = detail.photos || [];
+  const canManagePhotos = can('po.manage');
   const refresh = () => renderDetail(ctx, { id });
   const act = async (fn, message, type = 'success') => {
     try {
@@ -1175,6 +1177,31 @@ export async function renderDetail(ctx, options = {}) {
           </div>
         </div>
 
+        <div class="card" id="po-photos-card">
+          <div class="card-head"><div><h3>Reference Photos</h3><div class="sub">Optional photos printed on the purchase order when attached</div></div></div>
+          <div class="form-section">
+            <div class="po-photo-list" id="po-photo-list">
+              ${photos.length
+                ? photos.map((photo) => `<div class="po-photo-item" data-photo-id="${photo.id}">
+                    <a href="${esc(photo.url)}" target="_blank" rel="noopener noreferrer" title="Open photo">
+                      <img src="${esc(photo.url)}" alt="${esc(photo.caption || photo.fileName)}" />
+                    </a>
+                    <div class="small muted">${esc(photo.caption || photo.fileName)}</div>
+                    ${canManagePhotos ? `<button type="button" class="btn btn-sm btn-ghost" data-remove-photo="${photo.id}" title="Remove photo">${icon('trash')}</button>` : ''}
+                  </div>`).join('')
+                : '<div class="hint">No reference photos attached. Photos appear in the print only when attached.</div>'}
+            </div>
+            ${canManagePhotos && photos.length < 6 ? `
+              <form id="po-photo-form" class="form-grid" style="margin-top:12px">
+                <div class="field span-2"><label>Photo (JPEG, PNG or WebP, up to 5 MB)</label>
+                  <input class="input" type="file" name="photo" accept="image/jpeg,image/png,image/webp" required /></div>
+                <div class="field span-2"><label>Caption (optional)</label>
+                  <input class="input" name="caption" maxlength="200" placeholder="e.g. Product sample" /></div>
+                <div class="field span-2"><button class="btn btn-sm btn-primary" type="submit">${icon('plus')} Attach photo</button></div>
+              </form>` : ''}
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head"><div><h3>Revisions</h3><div class="sub">Snapshots taken before each revision</div></div></div>
           <div class="form-section">
@@ -1189,6 +1216,54 @@ export async function renderDetail(ctx, options = {}) {
         </div>
       </div>
     </div>`;
+
+  const photoForm = ctx.view.querySelector('#po-photo-form');
+  photoForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = photoForm.querySelector('[name=photo]');
+    const file = input.files && input.files[0];
+    if (!file) {
+      toast('Choose a photo first.', 'error');
+      return;
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('Could not read the photo.'));
+        reader.readAsDataURL(file);
+      });
+      const data = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : '';
+      await api.post(`/api/procurement/purchase-orders/${id}/photos`, {
+        fileName: file.name,
+        mimeType: file.type,
+        data,
+        caption: photoForm.querySelector('[name=caption]').value.trim(),
+      });
+      toast('Reference photo attached.');
+      await refresh();
+    } catch (err) {
+      toast(err.message || 'Could not attach the photo.', 'error');
+    }
+  });
+  ctx.view.querySelectorAll('[data-remove-photo]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const ok = await confirmDialog({
+        title: 'Remove reference photo',
+        message: 'Remove this photo from the purchase order? It will no longer appear in the print.',
+        confirmText: 'Remove photo',
+        danger: true,
+      });
+      if (!ok) return;
+      try {
+        await api.del(`/api/procurement/purchase-orders/${id}/photos/${button.dataset.removePhoto}`);
+        toast('Reference photo removed.');
+        await refresh();
+      } catch (err) {
+        toast(err.message || 'Could not remove the photo.', 'error');
+      }
+    });
+  });
 
   ctx.view.querySelector('[data-issue]')?.addEventListener('click', async () => {
     const ok = await confirmDialog({ title: 'Issue purchase order', message: 'Issue this PO to the vendor? Receipts can then be recorded.', confirmText: 'Issue PO' });
@@ -1402,6 +1477,7 @@ export async function renderPrint(ctx, options = {}) {
   const detail = await api.get(`/api/procurement/purchase-orders/${id}`);
   const po = detail.purchaseOrder;
   const items = detail.items || [];
+  const photos = detail.photos || [];
 
   const org = await api.get('/api/meta/bootstrap').catch(() => ({}));
   const s = org.settings || {};
@@ -1601,6 +1677,17 @@ export async function renderPrint(ctx, options = {}) {
 
         <div class="rp-total-row rp-item-count"><span>Total No. of Items</span><span>${items.length}</span></div>
         <div class="rp-amount-words"><b>Amount in Words :</b> ${esc(amountInWords(po.totalAmount))}</div>
+
+        ${photos.length ? `
+        <div class="rp-reference-photos">
+          <h3>Reference Photos</h3>
+          <div class="rp-photo-strip">
+            ${photos.map((photo) => `<figure>
+              <img src="${esc(photo.url)}" alt="${esc(photo.caption || photo.fileName)}" />
+              ${photo.caption ? `<figcaption>${esc(photo.caption)}</figcaption>` : ''}
+            </figure>`).join('')}
+          </div>
+        </div>` : ''}
 
         <div class="rp-terms-totals">
           <div class="rp-terms">

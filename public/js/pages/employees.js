@@ -111,7 +111,10 @@ export async function renderList(ctx) {
   });
   form.querySelector('[data-reset]').addEventListener('click', () => navigate('/employees'));
 
-  const openForm = (row = null) => {
+  const openForm = async (row = null) => {
+    const driver = row
+      ? (await api.get(`/api/procurement/employees/${row.id}/driver-profile`)).driverProfile || {}
+      : {};
     const unitOptions = meta.units.map((u) => ({ value: u.id, label: `${u.code} \u2014 ${u.name}` }));
     const deptOptions = [{ value: '', label: '\u2014 No department \u2014' }, ...meta.departments.filter((d) => d.active !== 0).map((d) => ({ value: d.id, label: d.name }))];
     const managerOptions = [
@@ -151,6 +154,10 @@ export async function renderList(ctx) {
         <select class="select" name="userId">${optionsHtml(userOptions, row?.userId || '')}</select>
         <div class="hint">Links this employee to an existing ABMDAS login without changing it.</div>
       </div>
+      <div class="field span-2"><div class="label strong">Fleet Desk qualification</div><div class="hint">Shared employee record — no separate driver master is maintained.</div></div>
+      ${field({ label: 'Available as a driver', name: 'isDriver', type: 'select', value: driver.isDriver ? '1' : '0', options: [{ value: '0', label: 'No' }, { value: '1', label: 'Yes' }] })}
+      ${field({ label: 'Driving licence number', name: 'licenseNo', value: driver.licenseNo || '' })}
+      ${field({ label: 'Licence expiry', name: 'licenseExpiry', type: 'date', value: driver.licenseExpiry || '' })}
     </form>`;
 
     const m = modal({
@@ -186,14 +193,23 @@ export async function renderList(ctx) {
         toast('Select a unit.', 'error');
         return;
       }
+      const driverData = {
+        isDriver: form.isDriver.value === '1',
+        licenseNo: form.licenseNo.value.trim(),
+        licenseExpiry: form.licenseExpiry.value,
+      };
       try {
+        let employeeId;
         if (row) {
           await api.put(`/api/procurement/employees/${row.id}`, data);
+          employeeId = row.id;
           toast('Employee updated.');
         } else {
-          await api.post('/api/procurement/employees', data);
+          const created = await api.post('/api/procurement/employees', data);
+          employeeId = created.id;
           toast('Employee created.');
         }
+        await api.put(`/api/procurement/employees/${employeeId}/driver-profile`, driverData);
         m.close();
         navigate('/employees');
       } catch (e) {

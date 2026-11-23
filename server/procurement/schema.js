@@ -687,6 +687,25 @@ function ensureProcurementSchema(db) {
       created_at TEXT NOT NULL
     );
 
+    /* Optional vendor-facing reference photographs. Rows are soft-deleted so a
+       removed photo stays in the audit trail; files remain on disk. */
+    CREATE TABLE IF NOT EXISTS po_reference_photos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      po_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      stored_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL DEFAULT 0,
+      caption TEXT NOT NULL DEFAULT '',
+      uploaded_by INTEGER REFERENCES users(id),
+      uploaded_at TEXT NOT NULL,
+      deleted_at TEXT,
+      deleted_by INTEGER REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_po_reference_photos_po
+      ON po_reference_photos(po_id, deleted_at);
+
     CREATE TABLE IF NOT EXISTS grns (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       grn_no TEXT NOT NULL UNIQUE,

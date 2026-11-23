@@ -19,6 +19,7 @@ import * as assetsPage from './pages/assets.js';
 import * as procurementDashboardPage from './pages/procurement-dashboard.js';
 import * as assetClassesPage from './pages/asset-classes.js';
 import * as alertsPage from './pages/alerts.js';
+import * as fleetPage from './pages/fleet.js';
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -41,6 +42,9 @@ import * as approvalsPage from './pages/approvals.js';
 import * as handoverPage from './pages/handover.js';
 import * as reportsPage from './pages/reports.js';
 import * as adminPage from './pages/admin.js';
+import * as documentsPage from './pages/documents.js';
+import * as workingDaysPage from './pages/working-days.js';
+import * as addressesPage from './pages/addresses.js';
 import * as verifyPage from './pages/verify.js';
 
 function selectedUnitLabel() {
@@ -92,16 +96,31 @@ const NAV = [
       { path: '/items', label: 'Items', icon: 'layers', permission: 'item.view' },
       { path: '/asset-classes', label: 'Asset Classes', icon: 'layers', permission: 'item.view' },
       { path: '/alerts', label: 'Alerts', icon: 'bell', permission: 'item.view' },
-      { path: '/org', label: 'Organization', icon: 'branch', permission: 'org.view' },
-      { path: '/employees', label: 'Employees', icon: 'users', permission: 'employee.view' },
       { path: '/stores', label: 'Stores', icon: 'database', permission: 'store.view' },
       { path: '/vendor-evaluations', label: 'Vendor Evaluation', icon: 'trend', permission: 'vendor.view' },
     ],
   },
   {
+    label: 'People & Organization',
+    items: [
+      { path: '/employees', label: 'Employees', icon: 'users', permission: 'employee.view' },
+      { path: '/org', label: 'Departments & Units', icon: 'branch', permission: 'org.view' },
+      { path: '/users', label: 'Users', icon: 'users', permission: 'user.manage' },
+      { path: '/documents', label: 'Documents', icon: 'file', permission: 'employee.view' },
+      { path: '/addresses', label: 'Addresses & Maps', icon: 'branch', permission: 'org.view' },
+      { path: '/working-days', label: 'Working Days & Holidays', icon: 'calendar', permission: 'org.view' },
+    ],
+  },
+  {
+    label: 'Fleet Desk',
+    items: [
+      { path: '/fleet', label: 'Vehicle Bookings', icon: 'car', permission: 'fleet.view' },
+      { path: '/fleet/masters', label: 'Fleet Masters', icon: 'gear', permission: 'fleet.view' },
+    ],
+  },
+  {
     label: 'Administration',
     items: [
-      { path: '/users', label: 'Users', icon: 'users', permission: 'user.manage' },
       { path: '/roles', label: 'Roles & Permissions', icon: 'shield', permission: 'role.manage' },
       { path: '/workflow', label: 'Approval Workflow', icon: 'branch', permission: 'workflow.manage' },
       { path: '/audit', label: 'Audit Trail', icon: 'clock', permission: 'audit.view' },
@@ -129,9 +148,14 @@ const TITLES = {
 '/procurement-dashboard': 'Procurement Dashboard',
 '/asset-classes': 'Asset Classes',
 '/alerts': 'Alerts',
+  '/fleet': 'Vehicle Bookings',
+  '/fleet/masters': 'Fleet Masters',
   '/stocks': 'Stock Register',
   '/org': 'Organization',
   '/employees': 'Employees',
+  '/documents': 'Documents',
+  '/addresses': 'Common Addresses',
+  '/working-days': 'Working Days & Holidays',
   '/stores': 'Stores',
   '/vendor-evaluations': 'Vendor Evaluation',
   '/users': 'User Management',
@@ -676,6 +700,13 @@ async function routePage(route, ctx) {
     if (!guard('item.view')) return;
     return alertsPage.renderList(ctx);
   }
+  if (p[0] === 'fleet') {
+    if (!guard('fleet.view')) return;
+    if (p[1] === 'masters') return fleetPage.renderMasters(ctx);
+    if (p[1] === 'bookings' && p[2] === 'new') return fleetPage.renderBookingForm(ctx);
+    if (p[1] === 'bookings' && p[2]) return fleetPage.renderBookingDetail(ctx, { id: p[2] });
+    return fleetPage.renderBookings(ctx);
+  }
   if (p[0] === 'asset-classes') {
     if (!guard('item.view')) return;
     if (p[1]) return assetClassesPage.renderForm(ctx, { id: p[1] });
@@ -710,6 +741,17 @@ async function routePage(route, ctx) {
   if (p[0] === 'employees') {
     if (!guard('employee.view')) return;
     return employeesPage.render(ctx, { id: p[1] });
+  }
+  if (p[0] === 'documents') {
+    return documentsPage.renderDocuments(ctx, ctx.route.query || {});
+  }
+  if (p[0] === 'addresses') {
+    if (!guard('org.view')) return;
+    return addressesPage.render(ctx);
+  }
+  if (p[0] === 'working-days') {
+    if (!guard('org.view')) return;
+    return workingDaysPage.render(ctx);
   }
   if (p[0] === 'stores') {
     if (!guard('store.view')) return;

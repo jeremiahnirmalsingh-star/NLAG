@@ -546,3 +546,33 @@ Each phase is additive, independently testable, and must not regress the existin
 - `scripts/qa/po-discount-no-double.js` is the regression gate: it creates a draft PO, saves it twice and revises it with client-shaped payloads that include `flatDiscountAmount: 0`, then asserts the discount, taxable value, tax and total are unchanged.
 - The PO print signature band was enlarged from a 20px to a 56px clear area while keeping the single-A4-page, no-browser-header/footer layout.
 - PO 0058 item-name alignment: line 13 was linked to item `ITM-00024` (`Media Tray Stand`) instead of `ITM-00021` (`Groove Bell`). The link was corrected, and item masters `ITM-00021`/`ITM-00023`/`ITM-00024` were renamed to the exact purchased variants already shown on the PO. The repeat-safe, audited repair (`SYSTEM_REPAIR`) now reports zero mismatches between PO line names and master names.
+
+### Fleet Desk module (delivered)
+- Fleet Desk is a native ABMDAS module, not a second application: it reuses the existing login, session timeout, roles, audit log and API host. No new credentials or database are introduced.
+- Additive schema in `server/fleet/schema.js` creates only `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statements for `fleet_areas`, `fleet_vehicles`, `fleet_trips` and the additive `employee_driver_profiles` qualification. Departments, employees and users are the existing common ABMDAS masters — Fleet no longer owns copies. Masters start empty; no demo records are seeded. Restarting the server is repeat-safe. Legacy empty tables from the first draft are left physically in place but are unused.
+- New permissions `fleet.view`, `fleet.booking.create`, `fleet.booking.manage` and `fleet.master.manage` are added without changing any existing grant. Administrators receive incharge access; staff can view and raise requests. Existing role assignments are untouched.
+- API lives under `/api/fleet`: `meta`, `bookings`, `bookings/:id/availability` and booking actions (`assign`, `reject`, `complete`), plus CRUD for the two Fleet-only masters (areas and vehicles). Booking numbers use a new `fleet_booking` sequence (`FD-0001` onward).
+- Server-side availability checks recheck both vehicle and driver conflicts for overlapping `ASSIGNED` trips, and assignment verifies the vehicle is active, has enough seats and that both resources are free. Non-incharge users see only their own requests.
+- The sidebar has its own **Fleet Desk** group with Vehicle Bookings and Fleet Masters. The booking form captures department, pickup/drop, trip window, passenger count and purpose; the detail page shows a Google Maps route link, free-resource assignment, rejection with remarks and completion.
+- Drivers are active employees with a driving qualification set on the shared Employee form; only those employees appear in assignment. Fleet areas can link to a common address and vehicles can link to a common fixed asset.
+- Service worker cache bumped to `abmdas-shell-v49`.
+
+### PO reference photos (delivered)
+- Additive table `po_reference_photos` stores optional vendor-facing photographs with soft delete, audit entries and a file under `C:\abmdas-data\uploads\po-reference-photos`. Uploads are limited to six per PO, 5 MB each, JPEG/PNG/WebP with magic-byte validation; no new permission is used (`po.manage` to attach/remove, `po.view` to read).
+- PO detail has a Reference Photos card for upload from the device (with an optional caption) and removal. `GET /api/procurement/purchase-orders/:id` returns `photos` for both the detail and print screens.
+- The vendor-facing PO print includes a compact **Reference Photos** strip **only when at least one photo is attached**; a PO without photos prints exactly as before. The strip is `break-inside: avoid`, kept to one compact row, and preserves the no-QR, no-browser-header/footer, single-A4-page, SGST/CGST/IGST and round-off safeguards. Service worker cache bumped to `abmdas-shell-v49`.
+
+### Common masters across core, Procurement and Fleet Desk (delivered)
+- **People & Organization** is now one sidebar group: Employees, Departments & Units, Users, Documents, Addresses & Maps, and Working Days & Holidays. These are shared by all three modules; no module keeps a second people or department master.
+- Fleet Desk reads core `departments` and `employees` through `/api/fleet/meta`; the employee form sets an additive `employee_driver_profiles` record (licence number/expiry) instead of maintaining a separate driver master. A Driver is therefore just an employee with a qualification.
+- `server/shared-masters.js` blocks deactivating or removing an employee or department that is still used by an open purchase order, an active fleet trip, or asset custody. No new permission is introduced.
+- Renaming an item master now updates every linked PO line in the same audited transaction (`server/routes/procurement.js`), so PO and Item Master names can never drift apart again. The QA gate passes with zero mismatches.
+
+### Phase 2 shared services (delivered)
+- **Documents** — additive `common_documents` table and `/api/documents` + `/api/files/common-document/:id`. One upload/permission/audit path for employee, department, user, fleet vehicle and fleet booking attachments; JPEG/PNG/WebP/PDF only, 5 MB limit, magic-byte checked, soft deleted. A generic Documents page and a link from Fleet booking detail are provided.
+- **Addresses & Maps** — additive `common_addresses` master with `/api/masters/addresses`. One label, postal address and lat/lng/maps URL per place; Fleet areas can link to it and auto-fill their map fields. Reusable by units, stores, vendors and PO shipping.
+- **Shared lookups** — `/api/masters/lookups` returns only the groups the user may see (units, departments, employees, stores, UOMs, cost centres; tax rates when a rate master exists). Cost centres, UOMs and stores were already common — now they are exposed through one endpoint for all modules.
+- **Working days / holidays** — additive `working_days` table and `/api/masters/working-days` with org permissions. A single shared calendar for trip planning, delivery dates and bill due dates.
+- **Vehicles as assets** — `fleet_vehicles.asset_id` optionally links a vehicle to the common fixed-asset register, giving one custody, depreciation and disposal history.
+- Service worker cache bumped to `abmdas-shell-v49`; all new schema statements are `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` plus two guarded nullable-column additions on Fleet tables. No drops, renames or demo data.
+

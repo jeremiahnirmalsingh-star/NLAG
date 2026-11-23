@@ -671,6 +671,19 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* Leave a generous clear band above the rule for a handwritten signature. */
 .rp-signs-single .line { margin-top: 56px; padding-top: 8px; text-align: center; }
 
+/* Optional PO reference photographs — on screen and on the vendor printout.
+   The print strip is a single compact row so the PO still fits one A4 page. */
+.po-photo-list { display: flex; flex-wrap: wrap; gap: 12px; }
+.po-photo-item { width: 108px; text-align: center; }
+.po-photo-item img { width: 100%; height: 82px; object-fit: cover; border: 1px solid var(--border); border-radius: 6px; display: block; }
+.po-photo-item .small { word-break: break-word; margin: 4px 0; }
+.rp-reference-photos { margin-top: 10px; break-inside: avoid; page-break-inside: avoid; }
+.rp-reference-photos h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: #123c69; border-bottom: 1px solid #c9d4e0; padding-bottom: 3px; margin: 0 0 5px; }
+.rp-photo-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+.rp-photo-strip figure { margin: 0; text-align: center; }
+.rp-photo-strip img { width: 100%; height: 18mm; object-fit: contain; border: 1px solid #b9c6d4; display: block; }
+.rp-photo-strip figcaption { font-size: 8px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1180px) {
   .grid-4 { grid-template-columns: repeat(2, minmax(0,1fr)); }
@@ -730,6 +743,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .print-po .rp-ref-table th, .print-po .rp-ref-table td { padding: 3px 4px; }
   .print-po .rp-terms-totals { margin-top: 8px; gap: 18px; }
   .print-po .rp-bottom-meta { margin-top: 10px; padding-top: 6px; }
+  .print-po .rp-reference-photos { margin-top: 6px; }
+  .print-po .rp-photo-strip img { height: 16mm; }
   .print-po .rp-signs-single { margin-top: 12px; break-inside: avoid; page-break-inside: avoid; }
   .print-po .rp-signs-single .rp-sign-org { margin-top: 10px; }
   .print-po .rp-signs-single .line { margin-top: 56px; padding-top: 8px; }

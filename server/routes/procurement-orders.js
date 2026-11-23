@@ -7,10 +7,12 @@
  * balances inside one transaction.
  */
 
+const path = require('node:path');
 const auth = require('../auth');
-const { HttpError } = require('../http');
+const { HttpError, saveUpload } = require('../http');
+const { DATA_DIR } = require('../db');
 const {
-  audit, notify, nowIso, today, round2, calculateRoundOff, nextPurchaseOrderNo, nextGrnNo,
+  audit, notify, nowIso, today, round2, calculateRoundOff, nextPurchaseOrderNo, nextGrnNo, badRequest,
 } = require('../util');
 const {
   unitScope, inList, requireText, optionalText, optionalId, optionalDate,
@@ -373,6 +375,39 @@ function poDeliveryAssignments() {
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
+
+const PO_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const PO_PHOTO_MAX_COUNT = 6;
+const PO_PHOTO_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
+const PO_PHOTO_UPLOAD_DIR = path.join(DATA_DIR, 'uploads', 'po-reference-photos');
+
+function photoMagicMatches(buffer, mime) {
+  if (mime === 'image/jpeg') return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  if (mime === 'image/png') return buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (mime === 'image/webp') return buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP';
+  return false;
+}
+
+function poPhotos(db, poId) {
+  return db
+    .prepare(
+      `SELECT id, file_name, stored_name, mime_type, size, caption, uploaded_at
+         FROM po_reference_photos
+        WHERE po_id = ? AND deleted_at IS NULL
+        ORDER BY id ASC`
+    )
+    .all(poId)
+    .map((row) => ({
+      id: row.id,
+      fileName: row.file_name,
+      url: `/api/files/po-reference-photo/${row.id}`,
+      mimeType: row.mime_type,
+      size: Number(row.size) || 0,
+      caption: row.caption || '',
+      uploadedAt: row.uploaded_at,
+    }));
+}
+
 function poOut(row) {
   return {
     id: row.id,
@@ -1107,6 +1142,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
       revisions,
       grns,
       invoices,
+      photos: poPhotos(ctx.db, po.id),
       actions: {
         canEdit: po.status === 'draft' && auth.can(ctx.user, 'po.manage'),
         canIssue: po.status === 'draft' && auth.can(ctx.user, 'po.manage'),
@@ -1118,6 +1154,58 @@ module.exports = function registerProcurementOrderRoutes(router) {
           && auth.can(ctx.user, 'invoice.manage'),
       },
     };
+  });
+
+  router.get('/api/procurement/purchase-orders/:id/photos', async (ctx) => {
+    auth.guard(ctx.user, 'po.view');
+    const po = getPo(ctx, ctx.params.id);
+    return { photos: poPhotos(ctx.db, po.id) };
+  });
+
+  router.post('/api/procurement/purchase-orders/:id/photos', async (ctx) => {
+    auth.guard(ctx.user, 'po.manage');
+    const po = getPo(ctx, ctx.params.id);
+    const body = ctx.body || {};
+    const name = String(body.fileName || body.name || '').trim().slice(0, 200);
+    const mime = String(body.mimeType || body.mime || '').toLowerCase();
+    if (!name || !body.data) throw badRequest('Choose a photo to upload.');
+    if (!PO_PHOTO_MIMES.includes(mime)) throw badRequest('Photos must be JPEG, PNG or WebP images.');
+    const buffer = Buffer.from(String(body.data), 'base64');
+    if (!buffer.length) throw badRequest('The photo is empty.');
+    if (buffer.length > PO_PHOTO_MAX_BYTES) throw badRequest('Photos must be 5 MB or smaller.');
+    if (!photoMagicMatches(buffer, mime)) throw badRequest('The file content does not match its type.');
+    const used = ctx.db
+      .prepare('SELECT COUNT(*) AS c FROM po_reference_photos WHERE po_id = ? AND deleted_at IS NULL')
+      .get(po.id).c;
+    if (used >= PO_PHOTO_MAX_COUNT) throw badRequest(`A purchase order can carry at most ${PO_PHOTO_MAX_COUNT} reference photos.`);
+
+    const saved = saveUpload({ name, data: String(body.data) }, PO_PHOTO_UPLOAD_DIR);
+    const caption = String(body.caption || '').trim().slice(0, 200);
+    const now = nowIso();
+    const result = ctx.db
+      .prepare(
+        `INSERT INTO po_reference_photos(po_id, file_name, stored_name, mime_type, size, caption, uploaded_by, uploaded_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(po.id, name, saved.stored, mime, saved.size, caption, ctx.user.id, now);
+    const photoId = Number(result.lastInsertRowid);
+    audit(ctx, 'CREATE', 'po_reference_photo', photoId, null, { poId: po.id, fileName: name, caption });
+    return { id: photoId, url: `/api/files/po-reference-photo/${photoId}`, fileName: name, caption };
+  });
+
+  router.delete('/api/procurement/purchase-orders/:id/photos/:photoId', async (ctx) => {
+    auth.guard(ctx.user, 'po.manage');
+    const po = getPo(ctx, ctx.params.id);
+    const row = ctx.db
+      .prepare('SELECT * FROM po_reference_photos WHERE id = ? AND po_id = ? AND deleted_at IS NULL')
+      .get(Number(ctx.params.photoId), po.id);
+    if (!row) throw new HttpError(404, 'Reference photo not found.');
+    const now = nowIso();
+    ctx.db
+      .prepare('UPDATE po_reference_photos SET deleted_at = ?, deleted_by = ? WHERE id = ?')
+      .run(now, ctx.user.id, row.id);
+    audit(ctx, 'DELETE', 'po_reference_photo', row.id, { fileName: row.file_name }, { deletedAt: now });
+    return { ok: true };
   });
 
   router.put('/api/procurement/purchase-orders/:id', async (ctx) => {
