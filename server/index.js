@@ -52,22 +52,36 @@ require('./routes/dashboard')(router);
 require('./routes/reports')(router);
 require('./routes/admin')(router);
 
+const ALLOWED_ORIGINS = String(process.env.ABMDAS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((value) => value.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
 function sameOrigin(req) {
-  const origin = req.headers.origin;
-  if (!origin) return true; // non-browser clients / same-origin navigation
+  const originHeader = req.headers.origin;
+  if (!originHeader) return true; // non-browser clients / same-origin navigation
 
-  // Behind Vercel (or any reverse proxy) the browser speaks to the public
-  // host while req.headers.host is the internal backend host. Trust the
-  // forwarded host when present so POST/PUT/DELETE are not rejected as
-  // cross-origin. X-Forwarded-Host may be a comma-separated proxy chain.
-  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
-  const host = forwardedHost || req.headers.host;
-
+  let origin;
   try {
-    return new URL(origin).host === host;
+    origin = new URL(originHeader);
   } catch {
     return false;
   }
+
+  // Explicit public origins are the reliable source of truth when the app is
+  // behind Vercel and a tunnel/proxy that rewrites X-Forwarded-Host.
+  if (ALLOWED_ORIGINS.includes(origin.origin)) return true;
+
+  // Fallback for direct/local requests and single-proxy setups. Forwarded
+  // hosts can be comma-separated chains, so accept any hop, not just the first.
+  const hostCandidates = [
+    req.headers.host,
+    ...String(req.headers['x-forwarded-host'] || '')
+      .split(',')
+      .map((value) => value.trim()),
+  ].filter(Boolean);
+
+  return hostCandidates.includes(origin.host);
 }
 
 const server = http.createServer(async (req, res) => {
