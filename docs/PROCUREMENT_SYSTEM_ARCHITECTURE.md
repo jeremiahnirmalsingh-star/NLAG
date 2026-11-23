@@ -461,17 +461,18 @@ Each phase is additive, independently testable, and must not regress the existin
 | Crash guards | `uncaughtException` and `unhandledRejection` handlers log instead of exiting the process. |
 | Client retries | `public/js/api.js` retries failed fetches three times with a short backoff before showing the connection error. |
 | Session timeout | Idle sessions expire after 30 minutes. Every authenticated request slides both the server-side expiry and the session cookie; `public/js/session.js` logs the UI out automatically on inactivity and syncs logout across tabs. Login and `/api/auth/me` return `sessionTimeoutMs` so the client uses the server value. |
-| Fresh assets | `public/sw.js` is network-first with a cache fallback (`abmdas-shell-v40`), so UI changes appear immediately instead of being served from an old cache. |
+| Fresh assets | `public/sw.js` is network-first with a cache fallback (`abmdas-shell-v47`), so UI changes appear immediately instead of being served from an old cache. |
 
 ### Online deployment - Vercel PWA + separate API (delivered)
 
 | Item | Detail |
 |---|---|
-| Topology | Vercel hosts only `public/` as the installable PWA. `vercel.json` declares `outputDirectory: "public"` and rewrites `/api/:path*` to a separate Node backend origin. The full server, SQLite database, sessions and uploads stay on a persistent-disk Node host, so Vercel's ephemeral filesystem never holds application data. |
-| Same-origin behind proxy | `server/index.js` now resolves the request host from `X-Forwarded-Host` (first value of the proxy chain) before comparing it with the browser `Origin`. This prevents proxied POST/PUT/DELETE requests from being rejected as cross-origin while preserving the existing local/offline behaviour. |
-| Configuration | Replace `https://YOUR-API-HOST` in `vercel.json` with the real backend origin. The rewrite keeps the `/api/...` path intact, so all existing endpoints, cookies, raw PDF/image responses and the 30-minute idle session flow are unchanged. Static responses carry the same CSP and security headers as the Node server. |
-| Data migration | The backend must mount a persistent volume at `/data`, set `ABMDAS_DATA_DIR=/data`, and restore `abmdas.db` plus `uploads/` once. The database is WAL-mode, so the source server must be stopped (or the `-wal`/`-shm` files copied with it) before taking the copy. |
-| Guide | Step-by-step provider setup, verification checklist and troubleshooting table live in `docs/VERCEL_DEPLOYMENT.md`. The old `C:\abmdas` folder and local supervisor remain the LAN/office deployment and are unaffected. |
+| Topology | Vercel hosts only `public/` as the installable PWA at `https://abmdas.vercel.app`. `vercel.json` declares `outputDirectory: "public"` and rewrites `/api/:path*` to `https://abmdas-api.tail8b0493.ts.net`. The full Node server, SQLite database, sessions and uploads stay on the local persistent disk at `C:\abmdas-data`; Vercel's ephemeral filesystem never holds application data. |
+| Backend exposure | Tailscale Funnel provides the free, stable public backend hostname and proxies port 443 to `127.0.0.1:3000`. The local supervisor keeps the Node API alive. No card or paid cloud disk is required. |
+| Same-origin behind proxy | `server/index.js` accepts a browser `Origin` when it matches an explicit `ABMDAS_ALLOWED_ORIGINS` entry (`https://abmdas.vercel.app`, `https://abmdas-api.tail8b0493.ts.net`) or any host in the `X-Forwarded-Host` chain. This prevents Vercel/Tailscale proxied POST/PUT/DELETE requests from being falsely rejected while preserving local/offline behaviour. |
+| Configuration | The Vercel rewrite keeps the `/api/...` path intact, so existing endpoints, cookies, raw PDF/image responses and the 30-minute idle session flow are unchanged. Static responses carry the same CSP and security headers as the Node server. |
+| Data migration | No migration was needed: the existing live `C:\abmdas-data\abmdas.db` and `uploads/` are already the backend's persistent store. The old `C:\abmdas` folder remains a verified manual copy for LAN/office use. |
+| Guide | Final URLs, supervisor environment, verification results and troubleshooting live in `docs/VERCEL_DEPLOYMENT.md`. |
 
 ### Phase 5g - free-text requisition lines and suggested vendors (delivered)
 
