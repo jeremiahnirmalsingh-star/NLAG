@@ -1,0 +1,14 @@
+{
+  "name": "ABMDAS — Administration Bill Management",
+  "short_name": "ABMDAS",
+  "description": "Administration Bill Management & Digital Approval System",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d2742",
+  "theme_color": "#0d2742",
+  "icons": [
+    { "src": "/img/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
