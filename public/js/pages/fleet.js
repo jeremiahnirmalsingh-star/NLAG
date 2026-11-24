@@ -1,7 +1,6 @@
 import { api } from '../api.js';
 import { can } from '../state.js';
 import { navigate, withQuery } from '../router.js';
-import { chooseLocation, locationSummary } from '../map-picker.js';
 import {
   esc, icon, statusBadge, emptyState, toast, field, modal, confirmDialog, actionDialog,
   fmtDate, serializeForm,
@@ -90,26 +89,16 @@ export async function renderBookings(ctx) {
 export async function renderBookingForm(ctx) {
   const meta = await api.get('/api/fleet/meta');
   const departments = meta.departments || [];
-  const apiKey = meta.googleMapsApiKey || '';
-  const mapHint = apiKey
-    ? 'Search for the place and drag the pin. No saved area master is needed.'
-    : 'Paste a Google Maps link or enter coordinates. Add a browser key in System Settings for the interactive map.';
-  let pickup = null;
-  let drop = null;
 
-  const locationCard = (kind, label) => `
+  const addressField = (kind, label, placeholder) => `
     <div class="field span-2">
       <label>${label} <span class="req">*</span></label>
-      <div class="location-picker" data-location-card="${kind}">
-        <div class="location-picker-value" data-location-summary="${kind}">${locationSummary(null)}</div>
-        <button type="button" class="btn btn-sm" data-choose-location="${kind}">${icon('branch')} Choose on map</button>
+      <div class="location-picker">
+        <input class="input" name="${kind}Address" value="" required placeholder="${esc(placeholder)}" />
+        <button type="button" class="btn btn-sm" data-open-map="${kind}" title="Open this address in Google Maps">${icon('external')} Open in Google Maps</button>
       </div>
       <input type="hidden" name="${kind}Name" value="" />
-      <input type="hidden" name="${kind}Address" value="" />
-      <input type="hidden" name="${kind}Lat" value="" />
-      <input type="hidden" name="${kind}Lng" value="" />
-      <input type="hidden" name="${kind}MapsUrl" value="" />
-      <div class="hint">${esc(mapHint)}</div>
+      <div class="hint">Type the full address. Use the button to verify it in Google Maps; no saved area master is needed.</div>
     </div>`;
 
   ctx.view.innerHTML = `
@@ -122,8 +111,8 @@ export async function renderBookingForm(ctx) {
         <div class="form-grid">
           ${field({ label: 'Department', name: 'departmentId', type: 'select', options: [{ value: '', label: '— Optional —' }, ...departments.filter((d) => d.active).map((d) => ({ value: d.id, label: d.name }))] })}
           ${field({ label: 'Number of persons', name: 'passengers', type: 'number', value: 1, required: true, attrs: 'min="1" max="60"' })}
-          ${locationCard('pickup', 'Pickup location')}
-          ${locationCard('drop', 'Drop location')}
+          ${addressField('pickup', 'Pickup address', 'e.g. NLAGC Main Gate, Bengaluru')}
+          ${addressField('drop', 'Drop address', 'e.g. Kempegowda International Airport, Bengaluru')}
           ${field({ label: 'Trip start', name: 'startAt', type: 'datetime-local', value: defaultStart(), required: true })}
           ${field({ label: 'Trip end', name: 'endAt', type: 'datetime-local', value: defaultEnd(), required: true })}
           ${field({ label: 'Purpose', name: 'purpose', type: 'textarea', required: true, span: true, placeholder: 'Reason for the trip' })}
@@ -135,26 +124,17 @@ export async function renderBookingForm(ctx) {
 
   const form = ctx.view.querySelector('#fleet-booking-form');
   if (!form) return;
-  const setLocation = (kind, value) => {
-    if (kind === 'pickup') pickup = value;
-    else drop = value;
-    form.querySelector(`[data-location-summary="${kind}"]`).innerHTML = locationSummary(value);
-    form.querySelector(`[name="${kind}Name"]`).value = value?.name || '';
-    form.querySelector(`[name="${kind}Address"]`).value = value?.address || '';
-    form.querySelector(`[name="${kind}Lat"]`).value = value?.lat ?? '';
-    form.querySelector(`[name="${kind}Lng"]`).value = value?.lng ?? '';
-    form.querySelector(`[name="${kind}MapsUrl"]`).value = value?.mapsUrl || '';
-  };
 
-  form.querySelectorAll('[data-choose-location]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const kind = button.dataset.chooseLocation;
-      const value = await chooseLocation({
-        title: kind === 'pickup' ? 'Choose pickup location' : 'Choose drop location',
-        apiKey,
-        initial: kind === 'pickup' ? pickup : drop,
-      });
-      if (value) setLocation(kind, value);
+  form.querySelectorAll('[data-open-map]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const kind = button.dataset.openMap;
+      const address = form.querySelector(`[name="${kind}Address"]`).value.trim();
+      if (!address) {
+        toast('Enter the address first.', 'error');
+        return;
+      }
+      const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+      window.open(url, '_blank', 'noopener,noreferrer');
     });
   });
 
@@ -164,8 +144,10 @@ export async function renderBookingForm(ctx) {
     err.classList.add('hidden');
     const data = serializeForm(form);
     data.passengers = Number(data.passengers) || 0;
-    if (!pickup || !drop) {
-      err.textContent = 'Choose both pickup and drop locations on Google Maps.';
+    data.pickupName = data.pickupAddress.trim();
+    data.dropName = data.dropAddress.trim();
+    if (!data.pickupName || !data.dropName) {
+      err.textContent = 'Enter both pickup and drop addresses.';
       err.classList.remove('hidden');
       return;
     }
@@ -196,10 +178,10 @@ export async function renderBookingDetail(ctx, options = {}) {
   }
 
   const routeLink = (() => {
-    const origin = b.pickup && b.pickup.lat != null && b.pickup.lng != null
-      ? `${b.pickup.lat},${b.pickup.lng}` : encodeURIComponent(b.pickupName);
-    const destination = b.drop && b.drop.lat != null && b.drop.lng != null
-      ? `${b.drop.lat},${b.drop.lng}` : encodeURIComponent(b.dropName);
+    const point = (value, name) => (value && value.lat != null && value.lng != null
+      ? `${value.lat},${value.lng}` : encodeURIComponent(name || ''));
+    const origin = point(b.pickup, b.pickupAddress || b.pickupName);
+    const destination = point(b.drop, b.dropAddress || b.dropName);
     return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
   })();
 
@@ -419,7 +401,7 @@ export async function renderMasters(ctx) {
 
   ctx.view.innerHTML = `
     <div class="page-head">
-      <div><h1>Fleet Masters</h1><div class="sub">Maintain vehicles. Pickup and drop locations are chosen on Google Maps when a booking is raised, so saved areas are not required.</div></div>
+      <div><h1>Fleet Masters</h1><div class="sub">Maintain vehicles. Pickup and drop addresses are entered on each booking and can be opened in Google Maps, so saved areas are not required.</div></div>
       <div class="page-actions"><a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a></div>
     </div>
     <div class="alert alert-info">Departments and drivers come from the shared <a href="#/employees">Employees</a> and <a href="#/org">Organization</a> masters. Mark an employee as a driver in their employee record.</div>

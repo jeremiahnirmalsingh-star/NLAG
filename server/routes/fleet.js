@@ -10,7 +10,7 @@
 const auth = require('../auth');
 const { HttpError } = require('../http');
 const {
-  audit, nowIso, nextSequence, badRequest, round2, getSettings,
+  audit, nowIso, nextSequence, badRequest, round2,
 } = require('../util');
 const { transaction, rowOr404 } = require('../procurement/shared');
 
@@ -172,13 +172,11 @@ function masterById(db, model, id) {
   );
 }
 
-/* A booking may use a legacy saved area or, normally, a map point chosen by
-   the requester. The chosen point is snapshotted on the trip so later edits to
-   an area (or deletion of one) never rewrite trip history. */
+/* A booking normally stores the address typed by the requester. Coordinates
+   are optional: when a Google Maps share link is used they can be supplied,
+   otherwise the address itself is used to open the route in Google Maps. */
 function coordinate(value, label) {
-  if (value === undefined || value === null || value === '') {
-    throw badRequest(`${label} latitude and longitude are required. Choose the place on Google Maps.`);
-  }
+  if (value === undefined || value === null || value === '') return null;
   const n = Number(value);
   if (!Number.isFinite(n) || Math.abs(n) > 180) {
     throw badRequest(`${label} map coordinates are invalid.`);
@@ -192,14 +190,20 @@ function locationFromBody(body, kind) {
   const address = text(body[`${kind}Address`], 500);
   const lat = coordinate(body[`${kind}Lat`], label);
   const lng = coordinate(body[`${kind}Lng`], label);
+  if ((lat == null) !== (lng == null)) {
+    throw badRequest(`${label} must have both latitude and longitude, or neither.`);
+  }
   if (!name && !address) throw badRequest(`${label} is required.`);
+  const place = address || name;
   return {
     name: name || address,
-    address: address || name,
+    address: place,
     lat,
     lng,
     mapsUrl: text(body[`${kind}MapsUrl`], 1000)
-      || `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
+      || (lat != null
+        ? `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`
+        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place)}`),
   };
 }
 
@@ -324,11 +328,7 @@ function freeResources(db, booking, unitIds = []) {
 module.exports = function registerFleetRoutes(router) {
   router.get('/api/fleet/meta', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
-    const settings = getSettings();
-    const googleMapsApiKey = settings['maps.google_api_key'] || '';
     return {
-      googleMapsApiKey,
-      mapsEnabled: !!googleMapsApiKey,
       permissions: {
         view: true,
         create: auth.can(ctx.user, 'fleet.booking.create'),
@@ -407,11 +407,14 @@ module.exports = function registerFleetRoutes(router) {
     if (pickupId && dropId && pickupId === dropId) {
       throw badRequest('Pickup and drop locations must be different.');
     }
-    if (!pickupId && !dropId
-      && pickup.lat != null && drop.lat != null
-      && Math.abs(pickup.lat - drop.lat) < 0.00001
-      && Math.abs(pickup.lng - drop.lng) < 0.00001) {
-      throw badRequest('Pickup and drop locations must be different.');
+    if (!pickupId && !dropId) {
+      const samePoint = pickup.lat != null && drop.lat != null
+        && Math.abs(pickup.lat - drop.lat) < 0.00001
+        && Math.abs(pickup.lng - drop.lng) < 0.00001;
+      const sameAddress = pickup.address.trim().toLowerCase() === drop.address.trim().toLowerCase();
+      if (samePoint || sameAddress) {
+        throw badRequest('Pickup and drop locations must be different.');
+      }
     }
 
     const passengers = integer(b.passengers, 'Number of persons', { min: 1, max: 60, required: true });

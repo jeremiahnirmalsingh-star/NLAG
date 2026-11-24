@@ -910,14 +910,6 @@ export async function renderSettings(ctx) {
                   options: [{ value: '0', label: 'Disabled' }, { value: '1', label: 'Enabled' }],
                   hint: 'In-app notifications are always enabled. Email delivery requires SMTP configuration.',
                 })}
-                ${field({
-                  label: 'Google Maps Browser API Key',
-                  name: 'maps.google_api_key',
-                  value: s['maps.google_api_key'] || '',
-                  span: true,
-                  placeholder: 'AIza…',
-                  hint: 'Enables the interactive pickup/drop map in Fleet Desk. Enable Maps JavaScript API and restrict this browser key to abmdas.vercel.app and your local host. It is visible to signed-in browsers by design.',
-                })}
               </div>
             </div>
           </div>
