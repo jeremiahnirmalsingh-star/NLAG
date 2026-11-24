@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { can } from '../state.js';
 import { navigate, withQuery } from '../router.js';
+import { chooseMapLocation } from '../osm-picker.js';
 import {
   esc, icon, statusBadge, emptyState, toast, field, modal, confirmDialog, actionDialog,
   fmtDate, serializeForm,
@@ -89,16 +90,23 @@ export async function renderBookings(ctx) {
 export async function renderBookingForm(ctx) {
   const meta = await api.get('/api/fleet/meta');
   const departments = meta.departments || [];
+  const picked = { pickup: null, drop: null };
 
   const addressField = (kind, label, placeholder) => `
     <div class="field span-2">
       <label>${label} <span class="req">*</span></label>
       <div class="location-picker">
         <input class="input" name="${kind}Address" value="" required placeholder="${esc(placeholder)}" />
-        <button type="button" class="btn btn-sm" data-open-map="${kind}" title="Open this address in Google Maps">${icon('external')} Open in Google Maps</button>
+        <div class="location-actions">
+          <button type="button" class="btn btn-sm" data-search-map="${kind}" title="Search and select the place on an OpenStreetMap map">${icon('search')} Search on map</button>
+          <button type="button" class="btn btn-sm" data-open-map="${kind}" title="Open this address in Google Maps">${icon('external')} Open in Google Maps</button>
+        </div>
       </div>
       <input type="hidden" name="${kind}Name" value="" />
-      <div class="hint">Type the full address. Use the button to verify it in Google Maps; no saved area master is needed.</div>
+      <input type="hidden" name="${kind}Lat" value="" />
+      <input type="hidden" name="${kind}Lng" value="" />
+      <input type="hidden" name="${kind}MapsUrl" value="" />
+      <div class="hint">Type the address, or use <b>Search on map</b> to pick it from OpenStreetMap. Coordinates are optional.</div>
     </div>`;
 
   ctx.view.innerHTML = `
@@ -125,6 +133,23 @@ export async function renderBookingForm(ctx) {
   const form = ctx.view.querySelector('#fleet-booking-form');
   if (!form) return;
 
+  form.querySelectorAll('[data-search-map]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const kind = button.dataset.searchMap;
+      const value = await chooseMapLocation({
+        title: kind === 'pickup' ? 'Search pickup location' : 'Search drop location',
+        initial: picked[kind],
+      });
+      if (!value) return;
+      picked[kind] = value;
+      form.querySelector(`[name="${kind}Address"]`).value = value.address;
+      form.querySelector(`[name="${kind}Name"]`).value = value.name;
+      form.querySelector(`[name="${kind}Lat"]`).value = value.lat;
+      form.querySelector(`[name="${kind}Lng"]`).value = value.lng;
+      form.querySelector(`[name="${kind}MapsUrl"]`).value = value.mapsUrl;
+    });
+  });
+
   form.querySelectorAll('[data-open-map]').forEach((button) => {
     button.addEventListener('click', () => {
       const kind = button.dataset.openMap;
@@ -138,14 +163,27 @@ export async function renderBookingForm(ctx) {
     });
   });
 
+  /* Editing a typed address after a map selection invalidates its coordinates. */
+  form.querySelectorAll('input[name$="Address"]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const kind = input.name.replace('Address', '');
+      if (picked[kind] && input.value.trim() !== picked[kind].address) {
+        picked[kind] = null;
+        ['Lat', 'Lng', 'MapsUrl'].forEach((suffix) => {
+          form.querySelector(`[name="${kind}${suffix}"]`).value = '';
+        });
+      }
+    });
+  });
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const err = ctx.view.querySelector('[data-err]');
     err.classList.add('hidden');
     const data = serializeForm(form);
     data.passengers = Number(data.passengers) || 0;
-    data.pickupName = data.pickupAddress.trim();
-    data.dropName = data.dropAddress.trim();
+    data.pickupName = data.pickupName || data.pickupAddress.trim();
+    data.dropName = data.dropName || data.dropAddress.trim();
     if (!data.pickupName || !data.dropName) {
       err.textContent = 'Enter both pickup and drop addresses.';
       err.classList.remove('hidden');
@@ -401,7 +439,7 @@ export async function renderMasters(ctx) {
 
   ctx.view.innerHTML = `
     <div class="page-head">
-      <div><h1>Fleet Masters</h1><div class="sub">Maintain vehicles. Pickup and drop addresses are entered on each booking and can be opened in Google Maps, so saved areas are not required.</div></div>
+      <div><h1>Fleet Masters</h1><div class="sub">Maintain vehicles. Pickup and drop addresses are searched on each booking with OpenStreetMap and can also be opened in Google Maps, so saved areas are not required.</div></div>
       <div class="page-actions"><a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a></div>
     </div>
     <div class="alert alert-info">Departments and drivers come from the shared <a href="#/employees">Employees</a> and <a href="#/org">Organization</a> masters. Mark an employee as a driver in their employee record.</div>

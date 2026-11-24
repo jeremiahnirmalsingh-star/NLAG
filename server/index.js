@@ -93,11 +93,17 @@ const server = http.createServer(async (req, res) => {
 
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Referrer-Policy', 'same-origin');
+  /* Origin-only referrer satisfies OpenStreetMap/Nominatim usage policies. */
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
-      "script-src 'self'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+    "default-src 'self'; "
+      + "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org; "
+      + "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+      + "script-src 'self'; "
+      + "font-src 'self' data: https://fonts.gstatic.com; "
+      + "connect-src 'self' https://photon.komoot.io https://nominatim.openstreetmap.org; "
+      + "frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
   );
 
   if (!pathname.startsWith('/api/')) {

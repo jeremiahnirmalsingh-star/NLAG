@@ -788,13 +788,45 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .asset-label-barcode { width: 100%; height: 46px; margin-top: 8px; }
 .asset-label-foot { font-size: 8px; color: #64748b; margin-top: 4px; }
 
-/* ---------- Fleet address entry ---------- */
+/* ---------- Fleet address entry & keyless map picker ---------- */
 .location-picker {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
-.location-picker .input { flex: 1 1 auto; min-width: 0; }
-.location-picker .btn { flex: none; white-space: nowrap; }
+.location-picker .input { flex: 1 1 220px; min-width: 0; }
+.location-actions { display: flex; gap: 6px; flex: none; flex-wrap: wrap; }
+.location-picker .btn { white-space: nowrap; }
+.osm-picker { min-width: 0; }
+.osm-search { position: relative; margin-bottom: 10px; }
+.osm-results {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0;
+  max-height: 260px; overflow-y: auto; background: #fff;
+  border: 1px solid #dbe3ef; border-radius: 10px; box-shadow: 0 12px 28px rgba(15, 23, 42, .16);
+}
+.osm-result {
+  display: block; width: 100%; text-align: left; padding: 9px 12px;
+  background: none; border: 0; border-bottom: 1px solid #eef2f7; cursor: pointer;
+}
+.osm-result:hover, .osm-result:focus { background: #fff7ed; outline: none; }
+.osm-result-name { display: block; font-size: 13px; font-weight: 600; color: #0f172a; }
+.osm-result-sub { display: block; font-size: 11px; color: #64748b; margin-top: 2px; }
+.osm-empty { padding: 12px; font-size: 12px; color: #64748b; }
+.osm-map {
+  position: relative; z-index: 0; width: 100%; height: 330px;
+  border: 1px solid #dbe3ef; border-radius: 10px;
+  overflow: hidden; background: #eef2f7; margin-bottom: 14px;
+}
+.osm-fields { margin-top: 4px; }
+.osm-status { margin-bottom: 6px; }
+.osm-pin-wrap { background: none; border: none; }
+.osm-pin {
+  display: block; width: 22px; height: 22px; margin: 2px;
+  background: #ea580c; border: 3px solid #fff; border-radius: 50%;
+  box-shadow: 0 2px 7px rgba(15, 23, 42, .35);
+}
+.leaflet-container { font-family: inherit; }
 @media (max-width: 640px) {
   .location-picker { align-items: stretch; flex-direction: column; }
-  .location-picker .btn { width: 100%; }
+  .location-actions { width: 100%; }
+  .location-actions .btn { flex: 1 1 auto; }
+  .osm-map { height: 270px; }
 }
