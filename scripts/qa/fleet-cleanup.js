@@ -11,6 +11,10 @@ const db = new DatabaseSync(path.resolve(dbPath));
 db.prepare('DELETE FROM fleet_trips WHERE purpose LIKE ?').run('QA %');
 db.prepare('DELETE FROM fleet_bookings WHERE purpose LIKE ?').run('QA %');
 db.prepare('DELETE FROM fleet_areas WHERE name LIKE ?').run('QA %');
+db.prepare(
+  `DELETE FROM fleet_vehicle_expenses WHERE vehicle_id IN
+     (SELECT id FROM fleet_vehicles WHERE reg_no LIKE 'QA-%')`
+).run();
 db.prepare('DELETE FROM fleet_vehicles WHERE reg_no LIKE ?').run('QA-%');
 db.prepare(
   `DELETE FROM employee_driver_profiles WHERE employee_id IN
@@ -23,7 +27,7 @@ db.prepare(
 db.prepare("DELETE FROM employees WHERE name LIKE 'QA %' OR employee_code LIKE 'QA-%'").run();
 db.prepare('DELETE FROM sequences WHERE key = ?').run('fleet_booking');
 for (const table of [
-  'fleet_trips', 'fleet_areas', 'fleet_vehicles',
+  'fleet_trips', 'fleet_areas', 'fleet_vehicles', 'fleet_vehicle_expenses',
 ]) {
   db.prepare('DELETE FROM sqlite_sequence WHERE name = ?').run(table);
 }

@@ -73,6 +73,80 @@ function integer(value, field, { min = 1, max = 1000, required = false } = {}) {
   return n;
 }
 
+function decimal(value, field, { min = 0, required = false } = {}) {
+  if (value === undefined || value === null || value === '') {
+    if (required) throw badRequest(`${field} is required.`);
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min) {
+    throw badRequest(`${field} must be a number of at least ${min}.`);
+  }
+  return round2(n);
+}
+
+/* Operating cost categories. Stored as short codes; the labels are shared
+   with the frontend through /api/fleet/expenses. */
+const EXPENSE_CATEGORIES = [
+  { value: 'FUEL', label: 'Fuel' },
+  { value: 'DRIVER', label: 'Driver charges' },
+  { value: 'TOLL', label: 'Toll & parking' },
+  { value: 'SERVICE', label: 'Service' },
+  { value: 'REPAIR', label: 'Repairs' },
+  { value: 'TYRE', label: 'Tyres' },
+  { value: 'TAX', label: 'Tax & insurance' },
+  { value: 'OTHER', label: 'Other' },
+];
+
+function expenseOut(db, row) {
+  if (!row) return null;
+  const vehicle = row.vehicle_id
+    ? db.prepare('SELECT reg_no FROM fleet_vehicles WHERE id = ?').get(row.vehicle_id)
+    : null;
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    vehicleRegNo: vehicle ? vehicle.reg_no : '',
+    date: row.expense_date,
+    category: row.category,
+    amount: round2(Number(row.amount) || 0),
+    quantity: row.quantity == null ? null : Number(row.quantity),
+    rate: row.rate == null ? null : Number(row.rate),
+    vendor: row.vendor || '',
+    billNo: row.bill_no || '',
+    odometerKm: row.odometer_km == null ? null : Number(row.odometer_km),
+    remarks: row.remarks || '',
+    createdAt: row.created_at,
+  };
+}
+
+function expenseValues(db, body) {
+  const b = body || {};
+  const vehicleId = integer(b.vehicleId, 'Vehicle', { required: true, min: 1, max: 100000000 });
+  if (!db.prepare('SELECT id FROM fleet_vehicles WHERE id = ? AND deleted_at IS NULL').get(vehicleId)) {
+    throw badRequest('Choose a valid vehicle.');
+  }
+  const date = text(b.date, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw badRequest('Expense date is required (YYYY-MM-DD).');
+  const category = text(b.category, 20).toUpperCase();
+  if (!EXPENSE_CATEGORIES.some((item) => item.value === category)) {
+    throw badRequest('Choose a valid expense category.');
+  }
+  const amount = decimal(b.amount, 'Amount', { required: true, min: 0.01 });
+  return {
+    vehicle_id: vehicleId,
+    expense_date: date,
+    category,
+    amount,
+    quantity: decimal(b.quantity, 'Quantity'),
+    rate: decimal(b.rate, 'Rate'),
+    vendor: text(b.vendor, 200),
+    bill_no: text(b.billNo, 100),
+    odometer_km: decimal(b.odometerKm, 'Odometer'),
+    remarks: text(b.remarks, 500),
+  };
+}
+
 function masterOut(row, model) {
   if (!row) return null;
   const base = {
@@ -282,6 +356,11 @@ function bookingOut(db, row) {
     driverId: row.driver_id,
     driverName: driver ? driver.name : '',
     driverCode: driver ? driver.employee_code || '' : '',
+    startKm: row.start_km == null ? null : Number(row.start_km),
+    endKm: row.end_km == null ? null : Number(row.end_km),
+    distanceKm: row.start_km == null || row.end_km == null || Number(row.end_km) <= Number(row.start_km)
+      ? null
+      : round2(Number(row.end_km) - Number(row.start_km)),
     remarks: row.remarks || '',
     createdAt: row.created_at,
     assignedAt: row.assigned_at,
@@ -323,6 +402,120 @@ function freeResources(db, booking, unitIds = []) {
     .filter((d) => !busy.drivers.has(d.id))
     .map((d) => ({ id: d.id, name: d.name, phone: d.phone || '' }));
   return { vehicles, drivers };
+}
+
+/**
+ * Apportion vehicle expenses to trips using kilometres run.
+ *
+ * For each vehicle: cost per km = total expenses / total km of trips that have
+ * both odometer readings. Each trip receives a share of every expense in
+ * proportion to its distance. Nothing is linked at expense-entry time.
+ * Expenses on a vehicle with no measured km are reported as unallocated.
+ */
+function tripCostReport(db) {
+  const trips = db
+    .prepare(
+      `SELECT t.*, v.reg_no, v.model, d.name AS department_name, e.name AS driver_name
+         FROM fleet_trips t
+         LEFT JOIN fleet_vehicles v ON v.id = t.vehicle_id
+         LEFT JOIN departments d ON d.id = t.department_id
+         LEFT JOIN employees e ON e.id = t.driver_id
+        WHERE t.status = 'COMPLETED'
+          AND t.start_km IS NOT NULL AND t.end_km IS NOT NULL
+          AND t.end_km > t.start_km
+        ORDER BY t.completed_at DESC, t.id DESC`
+    )
+    .all();
+
+  const expenses = db
+    .prepare('SELECT * FROM fleet_vehicle_expenses WHERE deleted_at IS NULL ORDER BY expense_date DESC, id DESC')
+    .all();
+
+  const rows = trips.map((row) => ({
+    id: row.id,
+    bookingNo: row.booking_no,
+    vehicleId: row.vehicle_id,
+    vehicleRegNo: row.reg_no || '',
+    vehicleModel: row.model || '',
+    departmentName: row.department_name || '',
+    driverName: row.driver_name || '',
+    purpose: row.purpose || '',
+    startAt: row.start_at,
+    completedAt: row.completed_at,
+    startKm: round2(Number(row.start_km)),
+    endKm: round2(Number(row.end_km)),
+    distanceKm: round2(Number(row.end_km) - Number(row.start_km)),
+    costs: Object.fromEntries(EXPENSE_CATEGORIES.map((c) => [c.value, 0])),
+    totalCost: 0,
+    costPerKm: 0,
+  }));
+
+  const byVehicle = new Map();
+  for (const row of rows) {
+    if (!byVehicle.has(row.vehicleId)) byVehicle.set(row.vehicleId, []);
+    byVehicle.get(row.vehicleId).push(row);
+  }
+
+  const unallocated = [];
+  for (const expense of expenses) {
+    const targets = byVehicle.get(expense.vehicle_id) || [];
+    const km = targets.reduce((sum, row) => sum + row.distanceKm, 0);
+    if (!targets.length || km <= 0) {
+      unallocated.push(expenseOut(db, expense));
+      continue;
+    }
+    const amount = Number(expense.amount) || 0;
+    for (const row of targets) {
+      const share = amount * (row.distanceKm / km);
+      row.costs[expense.category] = (row.costs[expense.category] || 0) + share;
+      row.totalCost += share;
+    }
+  }
+
+  const totals = {
+    trips: rows.length,
+    distanceKm: 0,
+    totalCost: 0,
+  };
+  for (const category of EXPENSE_CATEGORIES) totals[category.value] = 0;
+
+  for (const row of rows) {
+    for (const category of EXPENSE_CATEGORIES) {
+      row.costs[category.value] = round2(row.costs[category.value] || 0);
+      totals[category.value] += row.costs[category.value];
+    }
+    row.totalCost = round2(row.totalCost);
+    row.costPerKm = row.distanceKm > 0 ? round2(row.totalCost / row.distanceKm) : 0;
+    totals.distanceKm += row.distanceKm;
+    totals.totalCost += row.totalCost;
+  }
+  totals.distanceKm = round2(totals.distanceKm);
+  totals.totalCost = round2(totals.totalCost);
+  for (const category of EXPENSE_CATEGORIES) totals[category.value] = round2(totals[category.value]);
+  totals.costPerKm = totals.distanceKm > 0 ? round2(totals.totalCost / totals.distanceKm) : 0;
+
+  /* Per-vehicle summary, including vehicles that only have expenses. */
+  const vehicleRows = db
+    .prepare('SELECT id, reg_no, model FROM fleet_vehicles WHERE deleted_at IS NULL ORDER BY reg_no COLLATE NOCASE')
+    .all();
+  const vehicles = vehicleRows.map((vehicle) => {
+    const targets = byVehicle.get(vehicle.id) || [];
+    const km = round2(targets.reduce((sum, row) => sum + row.distanceKm, 0));
+    const spent = expenses
+      .filter((expense) => expense.vehicle_id === vehicle.id)
+      .reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0);
+    return {
+      id: vehicle.id,
+      regNo: vehicle.reg_no,
+      model: vehicle.model,
+      trips: targets.length,
+      distanceKm: km,
+      expenseTotal: round2(spent),
+      costPerKm: km > 0 ? round2(spent / km) : 0,
+    };
+  });
+
+  return { rows, totals, unallocated, vehicles, categories: EXPENSE_CATEGORIES };
 }
 
 module.exports = function registerFleetRoutes(router) {
@@ -462,7 +655,7 @@ module.exports = function registerFleetRoutes(router) {
     auth.guard(ctx.user, 'fleet.booking.manage');
     const id = Number(ctx.params.id);
     const action = text((ctx.body || {}).action, 30).toLowerCase();
-    if (!['assign', 'reject', 'complete'].includes(action)) throw badRequest('Unknown booking action.');
+    if (!['assign', 'reject', 'complete', 'odometer'].includes(action)) throw badRequest('Unknown booking action.');
 
     transaction(ctx.db, () => {
       const booking = rowOr404(
@@ -486,14 +679,15 @@ module.exports = function registerFleetRoutes(router) {
         const busy = busyResources(ctx.db, booking.start_at, booking.end_at, booking.id);
         if (busy.vehicles.has(vehicleId)) throw badRequest('That vehicle is already booked for this time.');
         if (busy.drivers.has(driverId)) throw badRequest('That driver is already booked for this time.');
+        const startKm = decimal((ctx.body || {}).startKm, 'Starting km');
         ctx.db
           .prepare(
             `UPDATE fleet_trips
-                SET status = 'ASSIGNED', vehicle_id = ?, driver_id = ?, assigned_at = ?, updated_at = ?
+                SET status = 'ASSIGNED', vehicle_id = ?, driver_id = ?, start_km = ?, assigned_at = ?, updated_at = ?
               WHERE id = ?`
           )
-          .run(vehicleId, driverId, now, now, id);
-        audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'ASSIGNED', vehicleId, driverId });
+          .run(vehicleId, driverId, startKm, now, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'ASSIGNED', vehicleId, driverId, startKm });
         return;
       }
       if (action === 'reject') {
@@ -504,13 +698,104 @@ module.exports = function registerFleetRoutes(router) {
         audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'REJECTED' });
         return;
       }
+      if (action === 'odometer') {
+        const startKm = decimal((ctx.body || {}).startKm, 'Starting km');
+        const endKm = decimal((ctx.body || {}).endKm, 'Closing km');
+        if (startKm === null && endKm === null) {
+          throw badRequest('Enter a starting or closing km reading.');
+        }
+        const nextStart = startKm ?? (booking.start_km == null ? null : Number(booking.start_km));
+        const nextEnd = endKm ?? (booking.end_km == null ? null : Number(booking.end_km));
+        if (nextStart != null && nextEnd != null && nextEnd < nextStart) {
+          throw badRequest('Closing km cannot be less than starting km.');
+        }
+        ctx.db
+          .prepare('UPDATE fleet_trips SET start_km = ?, end_km = ?, updated_at = ? WHERE id = ?')
+          .run(nextStart, nextEnd, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id,
+          { startKm: booking.start_km, endKm: booking.end_km },
+          { startKm: nextStart, endKm: nextEnd });
+        return;
+      }
       if (booking.status !== 'ASSIGNED') throw badRequest('Only assigned trips can be completed.');
+      const endKm = decimal((ctx.body || {}).endKm, 'Closing km');
+      if (endKm !== null && booking.start_km != null && endKm < Number(booking.start_km)) {
+        throw badRequest('Closing km cannot be less than starting km.');
+      }
       ctx.db
-        .prepare("UPDATE fleet_trips SET status = 'COMPLETED', completed_at = ?, updated_at = ? WHERE id = ?")
-        .run(now, now, id);
-      audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'COMPLETED' });
+        .prepare("UPDATE fleet_trips SET status = 'COMPLETED', end_km = ?, completed_at = ?, updated_at = ? WHERE id = ?")
+        .run(endKm, now, now, id);
+      audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'COMPLETED', endKm });
     });
     return { ok: true };
+  });
+
+  /* ---------------------------- Operations --------------------------- */
+  router.get('/api/fleet/expenses', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const rows = ctx.db
+      .prepare('SELECT * FROM fleet_vehicle_expenses WHERE deleted_at IS NULL ORDER BY expense_date DESC, id DESC')
+      .all();
+    return {
+      expenses: rows.map((row) => expenseOut(ctx.db, row)),
+      categories: EXPENSE_CATEGORIES,
+      vehicles: masterRows(ctx.db, 'vehicles'),
+    };
+  });
+
+  router.post('/api/fleet/expenses', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.booking.manage');
+    const values = expenseValues(ctx.db, ctx.body);
+    const now = nowIso();
+    const columns = [...Object.keys(values), 'created_by', 'created_at', 'updated_at'];
+    const result = ctx.db
+      .prepare(
+        `INSERT INTO fleet_vehicle_expenses(${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
+      )
+      .run(...Object.values(values), ctx.user.id, now, now);
+    const id = Number(result.lastInsertRowid);
+    const out = expenseOut(ctx.db, ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ?').get(id));
+    audit(ctx, 'CREATE', 'fleet_expense', id, null, out);
+    return { id, expense: out };
+  });
+
+  router.put('/api/fleet/expenses/:id', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.booking.manage');
+    const id = Number(ctx.params.id);
+    const existing = rowOr404(
+      ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ? AND deleted_at IS NULL').get(id),
+      'Expense not found.'
+    );
+    const values = expenseValues(ctx.db, ctx.body);
+    const keys = Object.keys(values);
+    ctx.db
+      .prepare(
+        `UPDATE fleet_vehicle_expenses SET ${keys.map((key) => `${key} = ?`).join(', ')}, updated_at = ? WHERE id = ?`
+      )
+      .run(...Object.values(values), nowIso(), id);
+    const updated = ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ?').get(id);
+    audit(ctx, 'UPDATE', 'fleet_expense', id, expenseOut(ctx.db, existing), expenseOut(ctx.db, updated));
+    return { ok: true, expense: expenseOut(ctx.db, updated) };
+  });
+
+  router.delete('/api/fleet/expenses/:id', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.booking.manage');
+    const id = Number(ctx.params.id);
+    const existing = rowOr404(
+      ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ? AND deleted_at IS NULL').get(id),
+      'Expense not found.'
+    );
+    const now = nowIso();
+    ctx.db
+      .prepare('UPDATE fleet_vehicle_expenses SET deleted_at = ?, deleted_by = ? WHERE id = ?')
+      .run(now, ctx.user.id, id);
+    audit(ctx, 'DELETE', 'fleet_expense', id, expenseOut(ctx.db, existing), { deletedAt: now });
+    return { ok: true };
+  });
+
+  router.get('/api/fleet/trip-costs', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    return tripCostReport(ctx.db);
   });
 
   /* ------------------------------ Masters ---------------------------- */

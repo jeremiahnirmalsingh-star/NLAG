@@ -20,6 +20,7 @@ import * as procurementDashboardPage from './pages/procurement-dashboard.js';
 import * as assetClassesPage from './pages/asset-classes.js';
 import * as alertsPage from './pages/alerts.js';
 import * as fleetPage from './pages/fleet.js';
+import * as fleetOpsPage from './pages/fleet-ops.js';
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -115,6 +116,7 @@ const NAV = [
     label: 'Fleet Desk',
     items: [
       { path: '/fleet', label: 'Vehicle Bookings', icon: 'car', permission: 'fleet.view' },
+      { path: '/fleet/operations', label: 'Fleet Operations', icon: 'chart', permission: 'fleet.view' },
       { path: '/fleet/masters', label: 'Fleet Masters', icon: 'gear', permission: 'fleet.view' },
     ],
   },
@@ -149,6 +151,7 @@ const TITLES = {
 '/asset-classes': 'Asset Classes',
 '/alerts': 'Alerts',
   '/fleet': 'Vehicle Bookings',
+  '/fleet/operations': 'Fleet Operations',
   '/fleet/masters': 'Fleet Masters',
   '/stocks': 'Stock Register',
   '/org': 'Organization',
@@ -714,6 +717,7 @@ async function routePage(route, ctx) {
   }
   if (p[0] === 'fleet') {
     if (!guard('fleet.view')) return;
+    if (p[1] === 'operations') return fleetOpsPage.renderOperations(ctx);
     if (p[1] === 'masters') return fleetPage.renderMasters(ctx);
     if (p[1] === 'bookings' && p[2] === 'new') return fleetPage.renderBookingForm(ctx);
     if (p[1] === 'bookings' && p[2]) return fleetPage.renderBookingDetail(ctx, { id: p[2] });

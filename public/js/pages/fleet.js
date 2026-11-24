@@ -270,6 +270,8 @@ export async function renderBookingDetail(ctx, options = {}) {
               <div><div class="label muted">Driver</div><div>${esc(b.driverName || '—')}</div></div>
               <div><div class="label muted">Assigned at</div><div>${esc(b.assignedAt ? fmtDate(b.assignedAt, true) : '—')}</div></div>
               <div><div class="label muted">Completed at</div><div>${esc(b.completedAt ? fmtDate(b.completedAt, true) : '—')}</div></div>
+              <div><div class="label muted">Odometer</div><div>${b.startKm == null && b.endKm == null ? '—' : `${esc(b.startKm ?? '—')} → ${esc(b.endKm ?? '—')} km`}</div></div>
+              <div><div class="label muted">Distance</div><div>${b.distanceKm == null ? '—' : `${Number(b.distanceKm).toLocaleString('en-IN', { maximumFractionDigits: 2 })} km`}</div></div>
             </div>
             ${b.remarks ? `<div class="help-block">${esc(b.remarks)}</div>` : ''}
           </div>
@@ -298,6 +300,11 @@ export async function renderBookingDetail(ctx, options = {}) {
                   ...(availability ? availability.drivers.map((d) => ({ value: d.id, label: `${d.name}${d.employeeCode ? ` · ${d.employeeCode}` : ''}` })) : []),
                 ],
               })}
+              ${field({
+                label: 'Starting km', name: 'startKm', type: 'number',
+                attrs: 'min="0" step="0.01"',
+                hint: 'Optional. Needed to apportion vehicle costs to this trip.',
+              })}
               <div class="field span-2 form-actions">
                 <button class="btn btn-primary" type="submit">${icon('check')} Assign trip</button>
                 <button class="btn btn-danger" type="button" data-reject>${icon('x')} Reject request</button>
@@ -309,7 +316,18 @@ export async function renderBookingDetail(ctx, options = {}) {
         ${canManage && b.status === 'ASSIGNED' ? `
         <div class="card">
           <div class="card-head"><div><h3>Complete trip</h3></div></div>
-          <div class="form-section"><button class="btn btn-primary" data-complete>${icon('checkCircle')} Mark as completed</button></div>
+          <div class="form-section">
+            <form id="fleet-complete-form" class="form-grid">
+              ${field({
+                label: 'Closing km', name: 'endKm', type: 'number', value: b.endKm ?? '',
+                attrs: 'min="0" step="0.01"',
+                hint: 'Optional. Records the distance for cost apportionment.',
+              })}
+              <div class="field span-2 form-actions">
+                <button class="btn btn-primary" type="submit">${icon('checkCircle')} Mark as completed</button>
+              </div>
+            </form>
+          </div>
         </div>` : ''}
       </div>
     </div>`;
@@ -322,7 +340,11 @@ export async function renderBookingDetail(ctx, options = {}) {
       toast('Choose both a vehicle and a driver.', 'error');
       return;
     }
-    await act('assign', { vehicleId: Number(data.vehicleId), driverId: Number(data.driverId) }, 'Trip assigned.');
+    await act('assign', {
+      vehicleId: Number(data.vehicleId),
+      driverId: Number(data.driverId),
+      startKm: data.startKm,
+    }, 'Trip assigned.');
   });
   ctx.view.querySelector('[data-reject]')?.addEventListener('click', async () => {
     const answer = await actionDialog({
@@ -334,13 +356,15 @@ export async function renderBookingDetail(ctx, options = {}) {
     });
     if (answer) await act('reject', { remarks: answer.comments }, 'Booking request rejected.');
   });
-  ctx.view.querySelector('[data-complete]')?.addEventListener('click', async () => {
+  ctx.view.querySelector('#fleet-complete-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const values = serializeForm(event.currentTarget);
     const ok = await confirmDialog({
       title: 'Complete trip',
       message: `Mark ${b.bookingNo} as completed?`,
       confirmText: 'Complete trip',
     });
-    if (ok) await act('complete', {}, 'Trip marked as completed.');
+    if (ok) await act('complete', { endKm: values.endKm }, 'Trip marked as completed.');
   });
 }
 

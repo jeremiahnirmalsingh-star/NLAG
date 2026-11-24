@@ -102,6 +102,36 @@ function ensureFleetSchema(db) {
      map point chosen at booking time. The rebuild is repeat-safe. */
   ensureTripLocationColumns(db);
 
+  /* Fleet operating costs are recorded against the vehicle only. They are
+     apportioned to trips later by kilometres run, so an expense never has to
+     be linked to a booking at entry time. */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fleet_vehicle_expenses (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      vehicle_id   INTEGER NOT NULL REFERENCES fleet_vehicles(id),
+      expense_date TEXT NOT NULL,
+      category     TEXT NOT NULL
+                     CHECK (category IN ('FUEL','DRIVER','TOLL','SERVICE','REPAIR','TYRE','TAX','OTHER')),
+      amount       REAL NOT NULL DEFAULT 0,
+      quantity     REAL,
+      rate         REAL,
+      vendor       TEXT NOT NULL DEFAULT '',
+      bill_no      TEXT NOT NULL DEFAULT '',
+      odometer_km  REAL,
+      remarks      TEXT NOT NULL DEFAULT '',
+      created_by   INTEGER REFERENCES users(id),
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT NOT NULL,
+      deleted_at   TEXT,
+      deleted_by   INTEGER REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_fleet_expenses_vehicle
+      ON fleet_vehicle_expenses(vehicle_id, expense_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_fleet_expenses_category
+      ON fleet_vehicle_expenses(category);
+  `);
+
   /* Additive links to common masters. SQLite has no ADD COLUMN IF NOT EXISTS,
      so inspect the table first. These are the only ALTER statements and they
      only add a nullable column to the Fleet tables created above. */
@@ -114,12 +144,17 @@ function ensureFleetSchema(db) {
   };
   addColumn('fleet_areas', 'address_id', 'INTEGER REFERENCES common_addresses(id)');
   addColumn('fleet_vehicles', 'asset_id', 'INTEGER REFERENCES assets(id)');
+  addColumn('fleet_trips', 'start_km', 'REAL');
+  addColumn('fleet_trips', 'end_km', 'REAL');
 
   /* Audited marker for the shared-master design. INSERT OR IGNORE keeps restarts
      repeat-safe and never overwrites an administrator's settings. */
   db.prepare(
     'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
   ).run('migration.fleet_shared_masters.v1', new Date().toISOString());
+  db.prepare(
+    'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
+  ).run('migration.fleet_operations.v1', new Date().toISOString());
 }
 
 function ensureTripLocationColumns(db) {
@@ -168,6 +203,8 @@ function ensureTripLocationColumns(db) {
         vehicle_id      INTEGER REFERENCES fleet_vehicles(id),
         driver_id       INTEGER REFERENCES employees(id),
         remarks         TEXT NOT NULL DEFAULT '',
+        start_km        REAL,
+        end_km          REAL,
         created_at      TEXT NOT NULL,
         updated_at      TEXT NOT NULL,
         assigned_at     TEXT,
@@ -179,7 +216,7 @@ function ensureTripLocationColumns(db) {
         pickup_name, pickup_address, pickup_lat, pickup_lng, pickup_maps_url,
         drop_name, drop_address, drop_lat, drop_lng, drop_maps_url,
         start_at, end_at, passengers, purpose, status, vehicle_id, driver_id,
-        remarks, created_at, updated_at, assigned_at, completed_at
+        remarks, start_km, end_km, created_at, updated_at, assigned_at, completed_at
       )
       SELECT
         t.id, t.booking_no, t.requester_id, t.department_id, ${ref('pickup_id')}, ${ref('drop_id')},
@@ -199,6 +236,7 @@ function ensureTripLocationColumns(db) {
         COALESCE(${old('status', "'PENDING'")}, 'PENDING'),
         t.vehicle_id, t.driver_id,
         COALESCE(${old('remarks', "''")}, ''),
+        ${old('start_km')}, ${old('end_km')},
         t.created_at, t.updated_at, t.assigned_at, t.completed_at
       FROM fleet_trips t
       LEFT JOIN fleet_areas pa ON pa.id = t.pickup_id

@@ -824,6 +824,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   box-shadow: 0 2px 7px rgba(15, 23, 42, .35);
 }
 .leaflet-container { font-family: inherit; }
+.table th.num, .table td.num { text-align: right; }
 @media (max-width: 640px) {
   .location-picker { align-items: stretch; flex-direction: column; }
   .location-actions { width: 100%; }
