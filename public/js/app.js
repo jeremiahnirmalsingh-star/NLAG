@@ -172,8 +172,20 @@ let unreadTimer = null;
 /* ------------------------------------------------------------------ */
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
+/* The app is hash-routed. If a link or bookmark opens a real path, adopt it as
+   the hash route instead of letting the page reload into the default screen. */
+function adoptPathAsHash() {
+  if (window.location.hash) return;
+  const { pathname, search } = window.location;
+  if (!pathname || pathname === '/' || pathname.startsWith('/api/')) return;
+  if (/\.[a-z0-9]+$/i.test(pathname)) return;
+  window.history.replaceState(null, '', `${window.location.origin}/#${pathname}${search}`);
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+}
+
 async function boot() {
   installQuickAdds();
+  adoptPathAsHash();
   try {
     const me = await api.get('/api/auth/me', { silent: true });
     state.user = me.user;

@@ -379,7 +379,7 @@ export async function renderMasters(ctx) {
   const canEdit = !!meta.permissions.manageMasters;
 
   const tabs = Object.entries(MASTER_MODELS).map(([key, value]) => `
-    <a class="btn btn-sm ${key === model ? 'btn-primary' : ''}" href="${withQuery('/fleet/masters', { model: key })}">${value.label}</a>`).join('');
+    <a class="btn btn-sm ${key === model ? 'btn-primary' : ''}" href="#${withQuery('/fleet/masters', { model: key })}">${value.label}</a>`).join('');
 
   ctx.view.innerHTML = `
     <div class="page-head">

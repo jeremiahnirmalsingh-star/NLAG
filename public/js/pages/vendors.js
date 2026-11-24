@@ -373,7 +373,7 @@ export async function renderDetail(ctx, { id }) {
 
         <div class="card">
           <div class="card-head"><div><h3>Recent Bills</h3><div class="sub">Latest bills raised against this vendor</div></div>
-            <div class="actions"><a class="btn btn-sm" href="${withQuery('/bills', { vendorId: v.id })}">View in Bills</a></div>
+            <div class="actions"><a class="btn btn-sm" href="#${withQuery('/bills', { vendorId: v.id })}">View in Bills</a></div>
           </div>
           <div class="table-wrap">
             ${data.bills.length
