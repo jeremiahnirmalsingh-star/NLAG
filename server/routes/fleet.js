@@ -10,7 +10,7 @@
 const auth = require('../auth');
 const { HttpError } = require('../http');
 const {
-  audit, nowIso, nextSequence, badRequest, round2,
+  audit, nowIso, nextSequence, badRequest, round2, getSettings,
 } = require('../util');
 const { transaction, rowOr404 } = require('../procurement/shared');
 
@@ -172,14 +172,78 @@ function masterById(db, model, id) {
   );
 }
 
+/* A booking may use a legacy saved area or, normally, a map point chosen by
+   the requester. The chosen point is snapshotted on the trip so later edits to
+   an area (or deletion of one) never rewrite trip history. */
+function coordinate(value, label) {
+  if (value === undefined || value === null || value === '') {
+    throw badRequest(`${label} latitude and longitude are required. Choose the place on Google Maps.`);
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || Math.abs(n) > 180) {
+    throw badRequest(`${label} map coordinates are invalid.`);
+  }
+  return n;
+}
+
+function locationFromBody(body, kind) {
+  const label = kind === 'pickup' ? 'Pickup location' : 'Drop location';
+  const name = text(body[`${kind}Name`], 200);
+  const address = text(body[`${kind}Address`], 500);
+  const lat = coordinate(body[`${kind}Lat`], label);
+  const lng = coordinate(body[`${kind}Lng`], label);
+  if (!name && !address) throw badRequest(`${label} is required.`);
+  return {
+    name: name || address,
+    address: address || name,
+    lat,
+    lng,
+    mapsUrl: text(body[`${kind}MapsUrl`], 1000)
+      || `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
+  };
+}
+
+function locationFromArea(db, areaId, kind) {
+  const area = db
+    .prepare('SELECT id, name, address, lat, lng, maps_url FROM fleet_areas WHERE id = ? AND deleted_at IS NULL AND active = 1')
+    .get(Number(areaId));
+  if (!area) throw badRequest(`Choose a valid ${kind} location.`);
+  return {
+    id: area.id,
+    name: area.name,
+    address: area.address || '',
+    lat: area.lat == null ? null : Number(area.lat),
+    lng: area.lng == null ? null : Number(area.lng),
+    mapsUrl: area.maps_url || '',
+  };
+}
+
 function bookingOut(db, row) {
   if (!row) return null;
   const user = db.prepare('SELECT name FROM users WHERE id = ?').get(row.requester_id);
   const dept = row.department_id
     ? db.prepare('SELECT name FROM departments WHERE id = ?').get(row.department_id)
     : null;
-  const pickup = db.prepare('SELECT name, address, lat, lng FROM fleet_areas WHERE id = ?').get(row.pickup_id);
-  const drop = db.prepare('SELECT name, address, lat, lng FROM fleet_areas WHERE id = ?').get(row.drop_id);
+  const savedPickup = row.pickup_id
+    ? db.prepare('SELECT name, address, lat, lng, maps_url FROM fleet_areas WHERE id = ?').get(row.pickup_id)
+    : null;
+  const savedDrop = row.drop_id
+    ? db.prepare('SELECT name, address, lat, lng, maps_url FROM fleet_areas WHERE id = ?').get(row.drop_id)
+    : null;
+  const pickup = {
+    name: row.pickup_name || savedPickup?.name || '',
+    address: row.pickup_address || savedPickup?.address || '',
+    lat: row.pickup_lat ?? savedPickup?.lat ?? null,
+    lng: row.pickup_lng ?? savedPickup?.lng ?? null,
+    mapsUrl: row.pickup_maps_url || savedPickup?.maps_url || '',
+  };
+  const drop = {
+    name: row.drop_name || savedDrop?.name || '',
+    address: row.drop_address || savedDrop?.address || '',
+    lat: row.drop_lat ?? savedDrop?.lat ?? null,
+    lng: row.drop_lng ?? savedDrop?.lng ?? null,
+    mapsUrl: row.drop_maps_url || savedDrop?.maps_url || '',
+  };
   const vehicle = row.vehicle_id
     ? db.prepare('SELECT reg_no, model FROM fleet_vehicles WHERE id = ?').get(row.vehicle_id)
     : null;
@@ -194,11 +258,15 @@ function bookingOut(db, row) {
     departmentId: row.department_id,
     departmentName: (dept && dept.name) || '',
     pickupId: row.pickup_id,
-    pickupName: (pickup && pickup.name) || '',
+    pickupName: pickup.name,
+    pickupAddress: pickup.address,
+    pickupMapsUrl: pickup.mapsUrl,
     dropId: row.drop_id,
-    dropName: (drop && drop.name) || '',
-    pickup: pickup || null,
-    drop: drop || null,
+    dropName: drop.name,
+    dropAddress: drop.address,
+    dropMapsUrl: drop.mapsUrl,
+    pickup,
+    drop,
     startAt: row.start_at,
     endAt: row.end_at,
     passengers: Number(row.passengers) || 0,
@@ -256,7 +324,11 @@ function freeResources(db, booking, unitIds = []) {
 module.exports = function registerFleetRoutes(router) {
   router.get('/api/fleet/meta', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
+    const settings = getSettings();
+    const googleMapsApiKey = settings['maps.google_api_key'] || '';
     return {
+      googleMapsApiKey,
+      mapsEnabled: !!googleMapsApiKey,
       permissions: {
         view: true,
         create: auth.can(ctx.user, 'fleet.booking.create'),
@@ -314,8 +386,6 @@ module.exports = function registerFleetRoutes(router) {
   router.post('/api/fleet/bookings', async (ctx) => {
     auth.guard(ctx.user, 'fleet.booking.create');
     const b = ctx.body || {};
-    const pickupId = integer(b.pickupId, 'Pickup location', { required: true });
-    const dropId = integer(b.dropId, 'Drop location', { required: true });
     const startAt = text(b.startAt, 40);
     const endAt = text(b.endAt, 40);
     if (!startAt || !endAt) throw badRequest('Start and end date/time are required.');
@@ -325,10 +395,25 @@ module.exports = function registerFleetRoutes(router) {
       throw badRequest('Enter a valid start and end date/time.');
     }
     if (start.getTime() >= end.getTime()) throw badRequest('End date/time must be after the start.');
-    const pickup = ctx.db.prepare('SELECT id FROM fleet_areas WHERE id = ? AND deleted_at IS NULL AND active = 1').get(pickupId);
-    const drop = ctx.db.prepare('SELECT id FROM fleet_areas WHERE id = ? AND deleted_at IS NULL AND active = 1').get(dropId);
-    if (!pickup || !drop) throw badRequest('Choose valid pickup and drop locations.');
-    if (pickupId === dropId) throw badRequest('Pickup and drop locations must be different.');
+
+    /* Legacy clients may still post pickupId/dropId. New bookings normally
+       post the map point chosen in the Google Maps picker. */
+    const pickupId = b.pickupId === undefined || b.pickupId === null || b.pickupId === ''
+      ? null : integer(b.pickupId, 'Pickup location', { min: 1, max: 100000000 });
+    const dropId = b.dropId === undefined || b.dropId === null || b.dropId === ''
+      ? null : integer(b.dropId, 'Drop location', { min: 1, max: 100000000 });
+    const pickup = pickupId ? locationFromArea(ctx.db, pickupId, 'pickup') : locationFromBody(b, 'pickup');
+    const drop = dropId ? locationFromArea(ctx.db, dropId, 'drop') : locationFromBody(b, 'drop');
+    if (pickupId && dropId && pickupId === dropId) {
+      throw badRequest('Pickup and drop locations must be different.');
+    }
+    if (!pickupId && !dropId
+      && pickup.lat != null && drop.lat != null
+      && Math.abs(pickup.lat - drop.lat) < 0.00001
+      && Math.abs(pickup.lng - drop.lng) < 0.00001) {
+      throw badRequest('Pickup and drop locations must be different.');
+    }
+
     const passengers = integer(b.passengers, 'Number of persons', { min: 1, max: 60, required: true });
     const departmentId = integer(b.departmentId, 'Department', { min: 1, max: 1000000 });
     if (departmentId && !ctx.db.prepare('SELECT id FROM departments WHERE id = ?').get(departmentId)) {
@@ -342,16 +427,22 @@ module.exports = function registerFleetRoutes(router) {
     const result = ctx.db
       .prepare(
         `INSERT INTO fleet_trips(
-           booking_no, requester_id, department_id, pickup_id, drop_id, start_at, end_at,
-           passengers, purpose, status, created_at, updated_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,'PENDING',?,?)`
+           booking_no, requester_id, department_id, pickup_id, drop_id,
+           pickup_name, pickup_address, pickup_lat, pickup_lng, pickup_maps_url,
+           drop_name, drop_address, drop_lat, drop_lng, drop_maps_url,
+           start_at, end_at, passengers, purpose, status, created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?)`
       )
       .run(
         bookingNo, ctx.user.id, departmentId, pickupId, dropId,
+        pickup.name, pickup.address, pickup.lat, pickup.lng, pickup.mapsUrl,
+        drop.name, drop.address, drop.lat, drop.lng, drop.mapsUrl,
         start.toISOString(), end.toISOString(), passengers, purpose, now, now
       );
     const id = Number(result.lastInsertRowid);
-    audit(ctx, 'CREATE', 'fleet_booking', id, null, { bookingNo, purpose, passengers });
+    audit(ctx, 'CREATE', 'fleet_booking', id, null, {
+      bookingNo, purpose, passengers, pickup: pickup.name, drop: drop.name,
+    });
     return { id, bookingNo, status: 'PENDING' };
   });
 

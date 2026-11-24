@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { can } from '../state.js';
 import { navigate, withQuery } from '../router.js';
+import { chooseLocation, locationSummary } from '../map-picker.js';
 import {
   esc, icon, statusBadge, emptyState, toast, field, modal, confirmDialog, actionDialog,
   fmtDate, serializeForm,
@@ -16,11 +17,6 @@ const BOOKING_STATUS = {
 /* Departments, Employees and Users are common ABMDAS masters maintained in the
    People & Organization group. Fleet Masters only owns trip-specific data. */
 const MASTER_MODELS = {
-  areas: {
-    label: 'Areas',
-    singular: 'Area',
-    columns: ['Name', 'Address', 'Common address', 'Map', 'Status'],
-  },
   vehicles: {
     label: 'Vehicles',
     singular: 'Vehicle',
@@ -93,9 +89,28 @@ export async function renderBookings(ctx) {
 
 export async function renderBookingForm(ctx) {
   const meta = await api.get('/api/fleet/meta');
-  const areas = meta.areas || [];
   const departments = meta.departments || [];
-  const noAreas = areas.filter((a) => a.active);
+  const apiKey = meta.googleMapsApiKey || '';
+  const mapHint = apiKey
+    ? 'Search for the place and drag the pin. No saved area master is needed.'
+    : 'Paste a Google Maps link or enter coordinates. Add a browser key in System Settings for the interactive map.';
+  let pickup = null;
+  let drop = null;
+
+  const locationCard = (kind, label) => `
+    <div class="field span-2">
+      <label>${label} <span class="req">*</span></label>
+      <div class="location-picker" data-location-card="${kind}">
+        <div class="location-picker-value" data-location-summary="${kind}">${locationSummary(null)}</div>
+        <button type="button" class="btn btn-sm" data-choose-location="${kind}">${icon('branch')} Choose on map</button>
+      </div>
+      <input type="hidden" name="${kind}Name" value="" />
+      <input type="hidden" name="${kind}Address" value="" />
+      <input type="hidden" name="${kind}Lat" value="" />
+      <input type="hidden" name="${kind}Lng" value="" />
+      <input type="hidden" name="${kind}MapsUrl" value="" />
+      <div class="hint">${esc(mapHint)}</div>
+    </div>`;
 
   ctx.view.innerHTML = `
     <div class="page-head">
@@ -103,33 +118,54 @@ export async function renderBookingForm(ctx) {
       <div class="page-actions"><a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a></div>
     </div>
     <div class="card" style="max-width:820px">
-      ${noAreas.length < 2
-        ? `<div class="alert alert-danger">At least two active pickup/drop areas are needed before a booking can be raised. ${meta.permissions && meta.permissions.manageMasters ? '<a href="#/fleet/masters">Set up fleet masters</a>' : 'Please ask the transport incharge to set up fleet areas.'}</div>`
-        : `<form id="fleet-booking-form" class="form-section">
-            <div class="form-grid">
-              ${field({ label: 'Department', name: 'departmentId', type: 'select', options: [{ value: '', label: '— Optional —' }, ...departments.filter((d) => d.active).map((d) => ({ value: d.id, label: d.name }))] })}
-              ${field({ label: 'Number of persons', name: 'passengers', type: 'number', value: 1, required: true, attrs: 'min="1" max="60"' })}
-              ${field({ label: 'Pickup location', name: 'pickupId', type: 'select', options: [{ value: '', label: '— Select pickup —' }, ...noAreas.map((a) => ({ value: a.id, label: a.name }))], required: true })}
-              ${field({ label: 'Drop location', name: 'dropId', type: 'select', options: [{ value: '', label: '— Select drop —' }, ...noAreas.map((a) => ({ value: a.id, label: a.name }))], required: true })}
-              ${field({ label: 'Trip start', name: 'startAt', type: 'datetime-local', value: defaultStart(), required: true })}
-              ${field({ label: 'Trip end', name: 'endAt', type: 'datetime-local', value: defaultEnd(), required: true })}
-              ${field({ label: 'Purpose', name: 'purpose', type: 'textarea', required: true, span: true, placeholder: 'Reason for the trip' })}
-            </div>
-            <div class="alert alert-danger hidden" data-err></div>
-            <div class="form-actions"><button class="btn btn-primary" type="submit">${icon('send')} Submit request</button></div>
-          </form>`}
+      <form id="fleet-booking-form" class="form-section">
+        <div class="form-grid">
+          ${field({ label: 'Department', name: 'departmentId', type: 'select', options: [{ value: '', label: '— Optional —' }, ...departments.filter((d) => d.active).map((d) => ({ value: d.id, label: d.name }))] })}
+          ${field({ label: 'Number of persons', name: 'passengers', type: 'number', value: 1, required: true, attrs: 'min="1" max="60"' })}
+          ${locationCard('pickup', 'Pickup location')}
+          ${locationCard('drop', 'Drop location')}
+          ${field({ label: 'Trip start', name: 'startAt', type: 'datetime-local', value: defaultStart(), required: true })}
+          ${field({ label: 'Trip end', name: 'endAt', type: 'datetime-local', value: defaultEnd(), required: true })}
+          ${field({ label: 'Purpose', name: 'purpose', type: 'textarea', required: true, span: true, placeholder: 'Reason for the trip' })}
+        </div>
+        <div class="alert alert-danger hidden" data-err></div>
+        <div class="form-actions"><button class="btn btn-primary" type="submit">${icon('send')} Submit request</button></div>
+      </form>
     </div>`;
 
   const form = ctx.view.querySelector('#fleet-booking-form');
   if (!form) return;
+  const setLocation = (kind, value) => {
+    if (kind === 'pickup') pickup = value;
+    else drop = value;
+    form.querySelector(`[data-location-summary="${kind}"]`).innerHTML = locationSummary(value);
+    form.querySelector(`[name="${kind}Name"]`).value = value?.name || '';
+    form.querySelector(`[name="${kind}Address"]`).value = value?.address || '';
+    form.querySelector(`[name="${kind}Lat"]`).value = value?.lat ?? '';
+    form.querySelector(`[name="${kind}Lng"]`).value = value?.lng ?? '';
+    form.querySelector(`[name="${kind}MapsUrl"]`).value = value?.mapsUrl || '';
+  };
+
+  form.querySelectorAll('[data-choose-location]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const kind = button.dataset.chooseLocation;
+      const value = await chooseLocation({
+        title: kind === 'pickup' ? 'Choose pickup location' : 'Choose drop location',
+        apiKey,
+        initial: kind === 'pickup' ? pickup : drop,
+      });
+      if (value) setLocation(kind, value);
+    });
+  });
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const err = ctx.view.querySelector('[data-err]');
     err.classList.add('hidden');
     const data = serializeForm(form);
     data.passengers = Number(data.passengers) || 0;
-    if (data.pickupId === data.dropId) {
-      err.textContent = 'Pickup and drop locations must be different.';
+    if (!pickup || !drop) {
+      err.textContent = 'Choose both pickup and drop locations on Google Maps.';
       err.classList.remove('hidden');
       return;
     }
@@ -194,8 +230,8 @@ export async function renderBookingDetail(ctx, options = {}) {
           <div class="card-head"><div><h3>Trip details</h3></div></div>
           <div class="form-section">
             <div class="detail-grid">
-              <div><div class="label muted">Pickup</div><div>${esc(b.pickupName)}</div></div>
-              <div><div class="label muted">Drop</div><div>${esc(b.dropName)}</div></div>
+              <div><div class="label muted">Pickup</div><div>${esc(b.pickupName || '—')}</div>${b.pickupAddress ? `<div class="small muted">${esc(b.pickupAddress)}</div>` : ''}</div>
+              <div><div class="label muted">Drop</div><div>${esc(b.dropName || '—')}</div>${b.dropAddress ? `<div class="small muted">${esc(b.dropAddress)}</div>` : ''}</div>
               <div><div class="label muted">Start</div><div>${esc(fmtDate(b.startAt, true))}</div></div>
               <div><div class="label muted">End</div><div>${esc(fmtDate(b.endAt, true))}</div></div>
               <div><div class="label muted">Persons</div><div>${b.passengers}</div></div>
@@ -370,7 +406,7 @@ function masterCell(model, record, meta = {}) {
 }
 
 export async function renderMasters(ctx) {
-  const model = MASTER_MODELS[ctx.route.query.model] ? ctx.route.query.model : 'areas';
+  const model = MASTER_MODELS[ctx.route.query.model] ? ctx.route.query.model : 'vehicles';
   const config = MASTER_MODELS[model];
   ctx.view.innerHTML = '<div class="empty">Loading fleet masters…</div>';
   const meta = await api.get('/api/fleet/meta');
@@ -383,7 +419,7 @@ export async function renderMasters(ctx) {
 
   ctx.view.innerHTML = `
     <div class="page-head">
-      <div><h1>Fleet Masters</h1><div class="sub">Maintain pickup/drop areas and vehicles. Employees, departments and users are common masters.</div></div>
+      <div><h1>Fleet Masters</h1><div class="sub">Maintain vehicles. Pickup and drop locations are chosen on Google Maps when a booking is raised, so saved areas are not required.</div></div>
       <div class="page-actions"><a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a></div>
     </div>
     <div class="alert alert-info">Departments and drivers come from the shared <a href="#/employees">Employees</a> and <a href="#/org">Organization</a> masters. Mark an employee as a driver in their employee record.</div>

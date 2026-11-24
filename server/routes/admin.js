@@ -285,7 +285,7 @@ module.exports = function registerAdminRoutes(router) {
       'org.name', 'org.department', 'org.address', 'org.phone', 'org.email', 'org.website',
       'org.gstin', 'org.pan', 'org.gst_state', 'currency', 'public_base_url',
       'report.footer', 'notify.email', 'tax.default_gst_rate', 'tax.default_transport_gst_rate',
-      'procurement.general_terms',
+      'procurement.general_terms', 'maps.google_api_key',
     ];
     const rateKeys = ['tax.default_gst_rate', 'tax.default_transport_gst_rate'];
     for (const [key, value] of Object.entries(body)) {

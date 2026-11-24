@@ -787,3 +787,25 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .asset-label-qr { width: 58px; height: 58px; flex: none; }
 .asset-label-barcode { width: 100%; height: 46px; margin-top: 8px; }
 .asset-label-foot { font-size: 8px; color: #64748b; margin-top: 4px; }
+
+/* ---------- Fleet map location picker ---------- */
+.location-picker {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border: 1px solid #dbe3ef; border-radius: 10px; padding: 10px 12px;
+  background: #f8fafc; min-height: 58px;
+}
+.location-picker-value { min-width: 0; line-height: 1.35; }
+.location-picker-value .mono { font-size: 11px; }
+.location-picker .btn { flex: none; }
+.map-picker-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.map-picker-toolbar .input { flex: 1 1 260px; }
+.map-picker-map {
+  width: 100%; height: 340px; border: 1px solid #dbe3ef; border-radius: 10px;
+  overflow: hidden; background: #eef2f7; margin-bottom: 12px;
+}
+.map-picker-fields { margin-top: 4px; }
+.map-picker .alert { margin-bottom: 10px; }
+@media (max-width: 640px) {
+  .map-picker-map { height: 280px; }
+  .location-picker { align-items: stretch; flex-direction: column; }
+}
