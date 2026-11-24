@@ -105,14 +105,24 @@ function masterOut(row, model) {
   return base;
 }
 
-/* Drivers are common employees with an additive driving qualification. */
-function driverRows(db) {
+/* Drivers are common employees with an additive driving qualification. A
+   driver is offered only in the units where that employee is assigned. */
+function employeeUnitClause(unitIds) {
+  const ids = [...new Set((unitIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) return '0';
+  const list = ids.join(',');
+  return `(EXISTS (SELECT 1 FROM employee_units eu WHERE eu.employee_id = e.id AND eu.unit_id IN (${list}))
+           OR (NOT EXISTS (SELECT 1 FROM employee_units eu WHERE eu.employee_id = e.id) AND e.unit_id IN (${list})))`;
+}
+
+function driverRows(db, unitIds = []) {
   return db
     .prepare(
       `SELECT e.id, e.employee_code, e.name, e.mobile, p.license_no, p.license_expiry
          FROM employees e
          JOIN employee_driver_profiles p ON p.employee_id = e.id
         WHERE e.deleted_at IS NULL AND e.status = 'Active' AND p.active = 1
+          AND ${employeeUnitClause(unitIds)}
         ORDER BY e.name COLLATE NOCASE`
     )
     .all()
@@ -126,12 +136,13 @@ function driverRows(db) {
     }));
 }
 
-function activeDriver(db, id) {
+function activeDriver(db, id, unitIds = []) {
   return db
     .prepare(
       `SELECT e.id, e.name FROM employees e
          JOIN employee_driver_profiles p ON p.employee_id = e.id
-        WHERE e.id = ? AND e.deleted_at IS NULL AND e.status = 'Active' AND p.active = 1`
+        WHERE e.id = ? AND e.deleted_at IS NULL AND e.status = 'Active' AND p.active = 1
+          AND ${employeeUnitClause(unitIds)}`
     )
     .get(Number(id));
 }
@@ -220,7 +231,7 @@ function busyResources(db, startAt, endAt, excludeId) {
   };
 }
 
-function freeResources(db, booking) {
+function freeResources(db, booking, unitIds = []) {
   const busy = busyResources(db, booking.start_at, booking.end_at, booking.id);
   const vehicles = db
     .prepare(
@@ -236,7 +247,7 @@ function freeResources(db, booking) {
       model: v.model,
       seats: Number(v.seats) || 0,
     }));
-  const drivers = driverRows(db)
+  const drivers = driverRows(db, unitIds)
     .filter((d) => !busy.drivers.has(d.id))
     .map((d) => ({ id: d.id, name: d.name, phone: d.phone || '' }));
   return { vehicles, drivers };
@@ -259,7 +270,7 @@ module.exports = function registerFleetRoutes(router) {
         .map((d) => ({ ...d, active: !!d.active })),
       areas: masterRows(ctx.db, 'areas'),
       vehicles: masterRows(ctx.db, 'vehicles'),
-      drivers: driverRows(ctx.db),
+      drivers: driverRows(ctx.db, ctx.unitIds),
       addresses: ctx.db
         .prepare('SELECT id, label, city, lat, lng, maps_url FROM common_addresses WHERE deleted_at IS NULL AND active = 1 ORDER BY label COLLATE NOCASE')
         .all()
@@ -350,7 +361,7 @@ module.exports = function registerFleetRoutes(router) {
       ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(Number(ctx.params.id)),
       'Booking not found.'
     );
-    return { availability: freeResources(ctx.db, booking) };
+    return { availability: freeResources(ctx.db, booking, ctx.unitIds) };
   });
 
   router.patch('/api/fleet/bookings/:id', async (ctx) => {
@@ -376,7 +387,7 @@ module.exports = function registerFleetRoutes(router) {
         if ((Number(vehicle.seats) || 0) < booking.passengers) {
           throw badRequest('The selected vehicle does not have enough seats.');
         }
-        const driver = activeDriver(ctx.db, driverId);
+        const driver = activeDriver(ctx.db, driverId, ctx.unitIds);
         if (!driver) throw badRequest('Choose an active driver from the common employee master.');
         const busy = busyResources(ctx.db, booking.start_at, booking.end_at, booking.id);
         if (busy.vehicles.has(vehicleId)) throw badRequest('That vehicle is already booked for this time.');

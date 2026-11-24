@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { can, state } from '../state.js';
+import { can } from '../state.js';
 import { navigate, withQuery } from '../router.js';
 import {
   esc, icon, statusBadge, emptyState, toast, field, modal, confirmDialog, initials,
@@ -9,12 +9,6 @@ const STATUS_OPTIONS = [
   { value: 'Active', label: 'Active' },
   { value: 'Inactive', label: 'Inactive' },
 ];
-
-function defaultUnitId(units) {
-  const ids = state.currentUnitIds.length ? state.currentUnitIds : state.memberUnitIds;
-  const found = units.find((u) => String(u.id) === String(ids[0]));
-  return found ? String(found.id) : (units.length ? String(units[0].id) : '');
-}
 
 function optionsHtml(options, selected) {
   return options
@@ -74,7 +68,7 @@ export async function renderList(ctx) {
       <div class="table-wrap">
         ${employees.length
           ? `<table class="tbl">
-              <thead><tr><th>Employee</th><th>Department</th><th>Designation</th><th>Contact</th><th>Reports to</th><th>Unit</th><th>Login</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Employee</th><th>Department</th><th>Designation</th><th>Contact</th><th>Reports to</th><th>Units</th><th>Login</th><th>Status</th><th></th></tr></thead>
               <tbody>${employees.map((e) => `<tr>
                 <td>
                   <div style="display:flex;gap:10px;align-items:center">
@@ -86,7 +80,7 @@ export async function renderList(ctx) {
                 <td>${esc(e.designation || '\u2014')}</td>
                 <td class="small">${e.email ? `<div>${esc(e.email)}</div>` : ''}${e.mobile ? `<div class="muted">${esc(e.mobile)}</div>` : ''}${!e.email && !e.mobile ? '\u2014' : ''}</td>
                 <td>${esc(e.reportingManagerName || '\u2014')}</td>
-                <td>${esc(e.unitName || '\u2014')}</td>
+                <td>${esc(e.allUnits ? 'All units' : (e.unitNames || e.unitName || '\u2014'))}</td>
                 <td>${e.username ? `<span class="chip gray">${esc(e.username)}</span>` : `<span class="small muted">Not linked</span>`}</td>
                 <td>${statusBadge(e.active ? 'active' : 'inactive')}</td>
                 <td class="actions">
@@ -115,7 +109,8 @@ export async function renderList(ctx) {
     const driver = row
       ? (await api.get(`/api/procurement/employees/${row.id}/driver-profile`)).driverProfile || {}
       : {};
-    const unitOptions = meta.units.map((u) => ({ value: u.id, label: `${u.code} \u2014 ${u.name}` }));
+    const allUnits = !!row?.allUnits;
+    const selectedUnitIds = (row?.unitIds || []).map(String);
     const deptOptions = [{ value: '', label: '\u2014 No department \u2014' }, ...meta.departments.filter((d) => d.active !== 0).map((d) => ({ value: d.id, label: d.name }))];
     const managerOptions = [
       { value: '', label: '\u2014 No reporting manager \u2014' },
@@ -128,15 +123,17 @@ export async function renderList(ctx) {
         .map((u) => ({ value: u.id, label: `${u.name} \u2014 ${u.username} (${u.role_name})` })),
     ];
 
-    const unitId = row ? row.unitId : defaultUnitId(meta.units);
-
     const body = `<form id="employee-form" class="form-grid" autocomplete="off">
       ${field({ label: 'Employee Name', name: 'name', value: row?.name || '', required: true, span: true })}
       ${field({ label: 'Employee Code', name: 'employeeCode', value: row?.employeeCode || '', hint: 'Leave blank to generate automatically.' })}
       ${field({ label: 'Status', name: 'status', type: 'select', value: row?.status || 'Active', options: STATUS_OPTIONS })}
-      <div class="field">
-        <label>Unit<span class="req">*</span></label>
-        <select class="select" name="unitId" required>${optionsHtml(unitOptions, unitId)}</select>
+      <div class="field span-2">
+        <label>Units<span class="req">*</span></label>
+        <label class="check mb-8"><input type="checkbox" name="allUnits" ${allUnits ? 'checked' : ''}> Available in all units</label>
+        <select class="select" name="unitIds" multiple size="4" ${allUnits ? 'disabled' : ''}>
+          ${meta.units.map((u) => `<option value="${u.id}" ${selectedUnitIds.includes(String(u.id)) ? 'selected' : ''}>${esc(u.code)} \u2014 ${esc(u.name)}</option>`).join('')}
+        </select>
+        <div class="hint">Select one or more units. A driver is offered in every unit where this employee is assigned.</div>
       </div>
       <div class="field">
         <label>Department</label>
@@ -169,6 +166,12 @@ export async function renderList(ctx) {
       size: 'wide',
     });
 
+    const allUnitsInput = m.el.querySelector('[name="allUnits"]');
+    const unitsInput = m.el.querySelector('[name="unitIds"]');
+    allUnitsInput.addEventListener('change', () => {
+      unitsInput.disabled = allUnitsInput.checked;
+    });
+
     m.el.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.el.querySelector('[data-save]').addEventListener('click', async () => {
       const form = m.el.querySelector('#employee-form');
@@ -176,7 +179,10 @@ export async function renderList(ctx) {
         name: form.name.value.trim(),
         employeeCode: form.employeeCode.value.trim(),
         status: form.status.value,
-        unitId: form.unitId.value,
+        allUnits: form.allUnits.checked,
+        unitIds: form.allUnits.checked
+          ? meta.units.map((u) => String(u.id))
+          : [...form.unitIds.selectedOptions].map((o) => o.value),
         departmentId: form.departmentId.value || null,
         designation: form.designation.value.trim(),
         email: form.email.value.trim(),
@@ -189,8 +195,8 @@ export async function renderList(ctx) {
         form.name.focus();
         return;
       }
-      if (!data.unitId) {
-        toast('Select a unit.', 'error');
+      if (!data.unitIds.length) {
+        toast('Select at least one unit.', 'error');
         return;
       }
       const driverData = {

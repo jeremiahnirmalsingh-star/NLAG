@@ -16,6 +16,10 @@ db.prepare(
   `DELETE FROM employee_driver_profiles WHERE employee_id IN
      (SELECT id FROM employees WHERE name LIKE 'QA %' OR employee_code LIKE 'QA-%')`
 ).run();
+db.prepare(
+  `DELETE FROM employee_units WHERE employee_id IN
+     (SELECT id FROM employees WHERE name LIKE 'QA %' OR employee_code LIKE 'QA-%')`
+).run();
 db.prepare("DELETE FROM employees WHERE name LIKE 'QA %' OR employee_code LIKE 'QA-%'").run();
 db.prepare('DELETE FROM sequences WHERE key = ?').run('fleet_booking');
 for (const table of [

@@ -31,6 +31,25 @@ function inList(ids) {
   return ids.map(() => '?').join(',');
 }
 
+/* Employees follow the same multi-unit model as users: employee_units holds
+   the assignments while employees.unit_id stays as the home/default unit. */
+function visibleEmployeeClause(ids) {
+  const list = ids.join(',');
+  return `(EXISTS (SELECT 1 FROM employee_units eu WHERE eu.employee_id = e.id AND eu.unit_id IN (${list}))
+           OR (NOT EXISTS (SELECT 1 FROM employee_units eu WHERE eu.employee_id = e.id) AND e.unit_id IN (${list})))`;
+}
+
+function activeUnitCount(db) {
+  return Number(db.prepare('SELECT COUNT(*) AS c FROM units WHERE active = 1').get().c || 0);
+}
+
+function saveEmployeeUnits(db, employeeId, unitIds) {
+  if (!unitIds) return;
+  db.prepare('DELETE FROM employee_units WHERE employee_id = ?').run(employeeId);
+  const insert = db.prepare('INSERT OR IGNORE INTO employee_units(employee_id, unit_id) VALUES (?,?)');
+  for (const unitId of unitIds) insert.run(employeeId, unitId);
+}
+
 function requireText(body, field, label, max = 200) {
   const value = String(body[field] || '').trim();
   if (!value) throw badRequest(`${label} is required.`);
@@ -346,7 +365,10 @@ function registerOrgLevel(router, cfg) {
 /* ------------------------------------------------------------------ */
 /* Employee mapping                                                    */
 /* ------------------------------------------------------------------ */
-function employeeOut(row) {
+function employeeOut(row, totalUnits = 0) {
+  const unitIds = row.unit_ids
+    ? String(row.unit_ids).split(',').map(Number).filter((id) => Number.isInteger(id) && id > 0)
+    : (row.unit_id ? [Number(row.unit_id)] : []);
   return {
     id: row.id,
     userId: row.user_id,
@@ -360,7 +382,10 @@ function employeeOut(row) {
     reportingManagerId: row.reporting_manager_id,
     reportingManagerName: row.manager_name || '',
     unitId: row.unit_id,
+    unitIds,
+    allUnits: totalUnits > 0 && unitIds.length >= totalUnits,
     unitName: row.unit_name || '',
+    unitNames: row.unit_names || row.unit_name || '',
     username: row.username || '',
     status: row.status,
     active: row.status === 'Active',
@@ -374,22 +399,41 @@ function getEmployee(ctx, id) {
   const row = ctx.db
     .prepare(
       `SELECT e.*, d.name AS department_name, m.name AS manager_name,
-              u.username, un.name AS unit_name
+              u.username, un.name AS unit_name,
+              (SELECT GROUP_CONCAT(eu.unit_id) FROM employee_units eu WHERE eu.employee_id = e.id) AS unit_ids,
+              (SELECT GROUP_CONCAT(mu.name, ', ') FROM employee_units eu JOIN units mu ON mu.id = eu.unit_id WHERE eu.employee_id = e.id) AS unit_names
          FROM employees e
          LEFT JOIN departments d ON d.id = e.department_id
          LEFT JOIN employees m ON m.id = e.reporting_manager_id
          LEFT JOIN users u ON u.id = e.user_id
          LEFT JOIN units un ON un.id = e.unit_id
-        WHERE e.id = ? AND e.deleted_at IS NULL AND e.unit_id IN (${inList(ids)})`
+        WHERE e.id = ? AND e.deleted_at IS NULL AND ${visibleEmployeeClause(ids)}`
     )
-    .get(Number(id), ...ids);
+    .get(Number(id));
   if (!row) throw new HttpError(404, 'Employee not found.');
   return row;
 }
 
+function employeeUnitIds(ctx, body, existing) {
+  const scope = unitScope(ctx);
+  const all = body.allUnits === true || String(body.allUnits) === 'true' || String(body.allUnits) === '1';
+  if (all) return scope;
+  if (body.unitIds === undefined && body.unitId === undefined && existing) return null;
+  let raw = body.unitIds;
+  if (raw === undefined) raw = [body.unitId];
+  if (!Array.isArray(raw)) raw = [raw];
+  const ids = [...new Set(raw.map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) throw badRequest('Select at least one unit.');
+  for (const id of ids) {
+    if (!scope.includes(id)) throw new HttpError(403, 'You are not a member of the selected unit.');
+  }
+  return ids;
+}
+
 function employeePayload(ctx, body, existing) {
   const name = requireText(body, 'name', 'Employee name', 160);
-  const unitId = ensureUnit(ctx, body.unitId ?? existing?.unit_id);
+  const unitIds = employeeUnitIds(ctx, body, existing);
+  const unitId = unitIds ? unitIds[0] : (existing ? existing.unit_id : null);
   const departmentId = optionalId(body, 'departmentId');
   if (departmentId) {
     const dept = ctx.db.prepare('SELECT id FROM departments WHERE id = ?').get(departmentId);
@@ -422,6 +466,7 @@ function employeePayload(ctx, body, existing) {
     mobile: optionalText(body, 'mobile', 40),
     managerId,
     unitId,
+    unitIds,
     userId,
     status,
   };
@@ -596,11 +641,11 @@ module.exports = function registerProcurementMasterRoutes(router) {
       departments: ctx.db.prepare('SELECT id, name, active FROM departments ORDER BY name').all(),
       managers: ctx.db
         .prepare(
-          `SELECT id, employee_code, name FROM employees
-            WHERE deleted_at IS NULL AND status = 'Active' AND unit_id IN (${inList(ids)})
+          `SELECT id, employee_code, name FROM employees e
+            WHERE deleted_at IS NULL AND status = 'Active' AND ${visibleEmployeeClause(ids)}
             ORDER BY name`
         )
-        .all(...ids),
+        .all(),
       users: ctx.db
         .prepare(
           `SELECT u.id, u.name, u.username, r.name AS role_name, e.id AS linked_employee_id
@@ -616,8 +661,8 @@ module.exports = function registerProcurementMasterRoutes(router) {
     auth.guard(ctx.user, 'employee.view');
     const ids = unitScope(ctx);
     const q = ctx.query || {};
-    const where = ['e.deleted_at IS NULL', `e.unit_id IN (${inList(ids)})`];
-    const params = [...ids];
+    const where = ['e.deleted_at IS NULL', visibleEmployeeClause(ids)];
+    const params = [];
 
     if (q.search) {
       where.push('(e.employee_code LIKE ? OR e.name LIKE ? OR e.designation LIKE ? OR e.email LIKE ? OR e.mobile LIKE ?)');
@@ -634,7 +679,9 @@ module.exports = function registerProcurementMasterRoutes(router) {
     const rows = ctx.db
       .prepare(
         `SELECT e.*, d.name AS department_name, m.name AS manager_name,
-                u.username, un.name AS unit_name
+                u.username, un.name AS unit_name,
+                (SELECT GROUP_CONCAT(eu.unit_id) FROM employee_units eu WHERE eu.employee_id = e.id) AS unit_ids,
+                (SELECT GROUP_CONCAT(mu.name, ', ') FROM employee_units eu JOIN units mu ON mu.id = eu.unit_id WHERE eu.employee_id = e.id) AS unit_names
            FROM employees e
            LEFT JOIN departments d ON d.id = e.department_id
            LEFT JOIN employees m ON m.id = e.reporting_manager_id
@@ -645,12 +692,13 @@ module.exports = function registerProcurementMasterRoutes(router) {
       )
       .all(...params);
 
-    return { employees: rows.map(employeeOut) };
+    const totalUnits = activeUnitCount(ctx.db);
+    return { employees: rows.map((row) => employeeOut(row, totalUnits)) };
   });
 
   router.get('/api/procurement/employees/:id', async (ctx) => {
     auth.guard(ctx.user, 'employee.view');
-    return { employee: employeeOut(getEmployee(ctx, ctx.params.id)) };
+    return { employee: employeeOut(getEmployee(ctx, ctx.params.id), activeUnitCount(ctx.db)) };
   });
 
   /* A driving qualification is an additive profile on the common employee
@@ -723,7 +771,8 @@ module.exports = function registerProcurementMasterRoutes(router) {
         data.managerId, data.unitId, data.status, now, now
       );
     const id = Number(res.lastInsertRowid);
-    audit(ctx, 'CREATE', 'employee', id, null, { employeeCode: code, name: data.name });
+    saveEmployeeUnits(ctx.db, id, data.unitIds);
+    audit(ctx, 'CREATE', 'employee', id, null, { employeeCode: code, name: data.name, unitIds: data.unitIds });
     return { id, employeeCode: code };
   });
 
@@ -750,8 +799,9 @@ module.exports = function registerProcurementMasterRoutes(router) {
         data.userId, code, data.name, data.departmentId, data.designation, data.email, data.mobile,
         data.managerId, data.unitId, data.status, nowIso(), existing.id
       );
+    saveEmployeeUnits(ctx.db, existing.id, data.unitIds);
     audit(ctx, 'UPDATE', 'employee', existing.id, { employeeCode: existing.employee_code, name: existing.name }, {
-      employeeCode: code, name: data.name, status: data.status,
+      employeeCode: code, name: data.name, status: data.status, unitIds: data.unitIds,
     });
     return { ok: true };
   });

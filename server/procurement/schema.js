@@ -203,6 +203,21 @@ function ensureProcurementSchema(db) {
       deleted_by INTEGER REFERENCES users(id)
     );
 
+    /* One employee can serve several units, mirroring user_units. The
+       employees.unit_id column remains the employee's home/default unit so
+       existing records and callers keep working unchanged. */
+    CREATE TABLE IF NOT EXISTS employee_units (
+      employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      unit_id     INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+      PRIMARY KEY (employee_id, unit_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_employee_units_unit ON employee_units(unit_id, employee_id);
+
+    /* Back-fill existing single-unit employees once, safely and repeatedly. */
+    INSERT OR IGNORE INTO employee_units(employee_id, unit_id)
+      SELECT id, unit_id FROM employees
+       WHERE deleted_at IS NULL AND unit_id IS NOT NULL;
+
     /* ------------------------------------------------------------------ */
     /* Item master                                                         */
     /* ------------------------------------------------------------------ */
