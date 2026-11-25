@@ -92,6 +92,15 @@ function getInvoice(ctx, id) {
   );
 }
 
+/* invoice_items.discount_amount stores the applied total. Expose the flat
+ * component as well so the edit form never adds the percentage a second time. */
+function invoiceLineFlatDiscount(row) {
+  const percent = Number(row.discount_percent) || 0;
+  const gross = round2((Number(row.quantity) || 0) * (Number(row.unit_price) || 0));
+  const percentAmount = round2((gross * percent) / 100);
+  return Math.max(0, round2((Number(row.discount_amount) || 0) - percentAmount));
+}
+
 function invoiceItems(db, invoiceId) {
   return db
     .prepare(
@@ -117,6 +126,7 @@ function invoiceItems(db, invoiceId) {
       unitPrice: Number(row.unit_price) || 0,
       discountPercent: Number(row.discount_percent) || 0,
       discountAmount: Number(row.discount_amount) || 0,
+      flatDiscountAmount: invoiceLineFlatDiscount(row),
       taxRate: Number(row.tax_rate) || 0,
       taxInclusive: !!row.tax_inclusive,
       taxableAmount: Number(row.taxable_amount) || 0,
@@ -185,7 +195,9 @@ function invoiceLineDefaults(ctx, poLine, quantity) {
   const percent = Number(poLine.discount_percent ?? itemDefaults.discountPercent ?? 0) || 0;
   const grossPo = round2(Number(poLine.quantity || 0) * Number(poLine.unit_price || 0));
   const percentAmount = round2((grossPo * percent) / 100);
-  const flatPo = Math.max(0, round2(Number(poLine.discount_amount ?? itemDefaults.discountAmount ?? 0) - percentAmount));
+  const flatPo = poLine.flat_discount_amount !== undefined
+    ? Math.max(0, round2(Number(poLine.flat_discount_amount) || 0))
+    : Math.max(0, round2(Number(poLine.discount_amount ?? itemDefaults.discountAmount ?? 0) - percentAmount));
   const ratio = Number(poLine.quantity) > 0 ? quantity / Number(poLine.quantity) : 0;
   return {
     taxRate: Number(poLine.tax_rate ?? itemDefaults.taxRate ?? 0) || 0,
@@ -195,6 +207,16 @@ function invoiceLineDefaults(ctx, poLine, quantity) {
     discountPercent: percent,
     discountAmount: round2(flatPo * ratio),
   };
+}
+
+/* Stored invoice header discount_amount is the applied total. Recover the
+ * flat portion when an edit payload omits it, so the percent is not doubled. */
+function invoiceHeaderFlatAmount(existing, items) {
+  if (!existing) return 0;
+  const percent = Number(existing.discount_percent) || 0;
+  const gross = round2(items.reduce((sum, line) => sum + Number(line.totalAmount || 0), 0));
+  const percentAmount = round2((gross * percent) / 100);
+  return Math.max(0, round2(Number(existing.discount_amount || 0) - percentAmount));
 }
 
 function invoiceLines(ctx, po, body, existingInvoice) {
@@ -416,7 +438,7 @@ function invoicePayload(ctx, body, existing) {
   const items = invoiceLines(ctx, po, { ...body, grnId }, existing);
   const headerDiscount = tax.parseHeaderDiscount({
     discountPercent: body.discountPercent ?? existing?.discount_percent ?? 0,
-    discountAmount: body.discountAmount ?? existing?.discount_amount ?? 0,
+    discountAmount: body.discountAmount ?? invoiceHeaderFlatAmount(existing, items),
   }, 'Invoice');
   const document = tax.calculateDocument(items, {
     ...headerDiscount,

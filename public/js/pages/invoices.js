@@ -85,6 +85,26 @@ function calcInvoiceDocument(lines, headerDiscount = {}) {
   };
 }
 
+/* Stored discount_amount is the APPLIED total (percent + flat). Invoice form
+ * fields hold the flat portion only; recover it so the percentage is not
+ * applied a second time when the PO basis is copied into a new invoice. */
+function invoiceFlatDiscount(line) {
+  if (line.flatDiscountAmount !== undefined && line.flatDiscountAmount !== null) {
+    return Math.max(0, round2(Number(line.flatDiscountAmount) || 0));
+  }
+  const gross = round2((Number(line.quantity) || 0) * (Number(line.unitPrice) || 0));
+  const percentAmount = round2((gross * (Number(line.discountPercent) || 0)) / 100);
+  return Math.max(0, round2((Number(line.discountAmount) || 0) - percentAmount));
+}
+
+function invoiceHeaderFlatDiscount(invoice, items) {
+  if (!invoice) return 0;
+  const percent = Number(invoice.discountPercent) || 0;
+  const gross = round2(items.reduce((sum, line) => sum + (Number(line.totalAmount) || 0), 0));
+  const percentAmount = round2((gross * percent) / 100);
+  return Math.max(0, round2((Number(invoice.discountAmount) || 0) - percentAmount));
+}
+
 function categoryOptions(categories) {
   return (categories || []).map((c) => ({ value: c.id, label: c.name }));
 }
@@ -185,8 +205,12 @@ async function loadBasis(meta, poId) {
     const received = accepted.get(line.id);
     const acceptedQty = received ? received.qty : 0;
     const remaining = Math.max(acceptedQty - (line.invoicedQuantity || 0), 0);
+    const flatDiscount = invoiceFlatDiscount(line);
     return {
       ...line,
+      discountAmount: flatDiscount,
+      flatDiscountAmount: flatDiscount,
+      appliedDiscountAmount: round2(line.discountAmount),
       grnItemId: received ? received.grnItemId : null,
       acceptedQuantity: acceptedQty,
       availableQuantity: Math.round(remaining * 100) / 100,
@@ -210,6 +234,7 @@ export async function renderForm(ctx, options = {}) {
     invoice = detail.invoice;
     if (invoice.status !== 'draft') throw new Error('Only draft procurement invoices can be edited.');
   }
+  const existingItems = detail?.items || [];
 
   let purchaseOrders = meta.purchaseOrders || [];
   if (invoice && !purchaseOrders.some((p) => Number(p.id) === Number(invoice.poId))) {
@@ -259,7 +284,7 @@ export async function renderForm(ctx, options = {}) {
                 ${field({ label: 'Due date', name: 'dueDate', type: 'date', value: invoice?.dueDate || '' })}
                 ${field({ label: 'GST type', name: 'gstType', type: 'select', value: gstValue, options: gstTypes.map((g) => ({ value: g.value, label: GST_LABEL[g.value] || g.label })) })}
                 ${field({ label: 'Header discount %', name: 'discountPercent', type: 'number', value: invoice?.discountPercent ?? 0, attrs: 'min="0" max="100" step="0.01"' })}
-                ${field({ label: 'Header discount amount', name: 'discountAmount', type: 'number', value: invoice?.discountAmount ?? 0, attrs: 'min="0" step="0.01"' })}
+                ${field({ label: 'Header discount amount', name: 'discountAmount', type: 'number', value: invoiceHeaderFlatDiscount(invoice, existingItems), attrs: 'min="0" step="0.01"' })}
                 <div class="field span-2"><label>Goods receipt <span class="hint">Optional</span></label>
                   <select class="select" name="grnId" data-grn>
                     <option value="">\u2014 All posted receipts for this order \u2014</option>
@@ -333,7 +358,6 @@ export async function renderForm(ctx, options = {}) {
 
   let basis = null;
   let savedEdits = {};
-  const existingItems = detail?.items || [];
   const editKey = (poItemId, grnItemId) => `${poItemId}:${grnItemId || ''}`;
 
   function readLineInputs(row) {
@@ -462,7 +486,7 @@ export async function renderForm(ctx, options = {}) {
               quantity: edit.quantity ?? prior?.quantity ?? line.availableQuantity,
               unitPrice: edit.unitPrice ?? prior?.unitPrice ?? line.unitPrice ?? 0,
               discountPercent: edit.discountPercent ?? prior?.discountPercent ?? line.discountPercent ?? 0,
-              discountAmount: edit.discountAmount ?? prior?.discountAmount ?? line.discountAmount ?? 0,
+              discountAmount: edit.discountAmount ?? (prior ? invoiceFlatDiscount(prior) : line.discountAmount ?? 0),
               taxRate: edit.taxRate ?? prior?.taxRate ?? line.taxRate ?? 0,
               taxInclusive: edit.taxInclusive ?? prior?.taxInclusive ?? line.taxInclusive ?? false,
             };
