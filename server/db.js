@@ -1324,6 +1324,22 @@ syncSequenceFloor('handover', 'handovers', 'handover_no', 'HND', true);
 /* ------------------------------------------------------------------ */
 require('./procurement/schema').ensureProcurementSchema(db);
 
+/* PO numbers use one continuous trailing series across units, departments
+   and financial years. Seed the sequence from the highest suffix already
+   used (including soft-deleted POs) so existing numbers are never reused. */
+function syncContinuousPoSequence() {
+  let max = 0;
+  for (const row of db.prepare('SELECT po_no FROM purchase_orders').all()) {
+    const n = parseInt(String(row.po_no || '').split('/').pop(), 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  db.prepare(
+    `INSERT INTO sequences(key, value) VALUES ('purchase_order', ?)
+     ON CONFLICT(key) DO UPDATE SET value = CASE WHEN value < excluded.value THEN excluded.value ELSE value END`
+  ).run(max);
+}
+syncContinuousPoSequence();
+
 /* Additive Fleet Desk module schema (vehicle booking and trip management). */
 require('./fleet/schema').ensureFleetSchema(db);
 

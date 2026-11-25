@@ -81,7 +81,8 @@ function financialYear(dateValue) {
   return `${String(start).slice(-2)}-${String(start + 1).slice(-2)}`;
 }
 
-/* PO/UNITCODE/DEPTCODE/FY/NNNN, with the sequence scoped to that combination. */
+/* PO/UNITCODE/DEPTCODE/FY/NNNN. The trailing NNNN is one continuous,
+   register-wide series; unit, department and FY are only labels. */
 function nextPurchaseOrderNo(unitId, departmentId, poDate) {
   const unit = db.prepare('SELECT code FROM units WHERE id = ?').get(unitId);
   const dept = departmentId
@@ -90,16 +91,14 @@ function nextPurchaseOrderNo(unitId, departmentId, poDate) {
   const unitCode = String((unit && unit.code) || 'UNIT').toUpperCase();
   const deptCode = String((dept && dept.code) || 'GEN').toUpperCase();
   const fy = financialYear(poDate);
-  const key = `purchase_order:${unitCode}:${deptCode}:${fy}`;
-  const firstPoNumber = 57;
-  const current = db.prepare('SELECT value FROM sequences WHERE key = ?').get(key);
-  if (!current) {
-    db.prepare('INSERT INTO sequences(key, value) VALUES (?, ?)').run(key, firstPoNumber - 1);
-  } else if (Number(current.value) < firstPoNumber - 1) {
-    db.prepare('UPDATE sequences SET value = ? WHERE key = ?').run(firstPoNumber - 1, key);
+  const key = 'purchase_order';
+  const exists = db.prepare('SELECT 1 FROM purchase_orders WHERE po_no = ?');
+  for (let attempt = 0; attempt < 10000; attempt += 1) {
+    const sequence = nextSequence(key, { year: false, pad: 4 });
+    const poNo = `PO/${unitCode}/${deptCode}/${fy}/${sequence}`;
+    if (!exists.get(poNo)) return poNo;
   }
-  const sequence = nextSequence(key, { year: false, pad: 4 });
-  return `PO/${unitCode}/${deptCode}/${fy}/${sequence}`;
+  throw new Error('Unable to allocate a unique purchase order number.');
 }
 
 function nextGrnNo() {

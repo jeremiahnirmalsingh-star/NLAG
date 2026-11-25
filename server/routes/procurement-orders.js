@@ -1044,7 +1044,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
       auditSource = { direct: true };
     }
 
-    const poNo = nextPurchaseOrderNo(unitId, departmentId, poDate);
+    let poNo;
     const headerDiscount = tax.parseHeaderDiscount({
       discountPercent: body.discountPercent ?? discountDefaults.discountPercent ?? 0,
       flatDiscountAmount: body.flatDiscountAmount ?? body.discountAmount ?? discountDefaults.discountAmount ?? 0,
@@ -1055,6 +1055,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
     let id;
     let totals;
     transaction(ctx.db, () => {
+      poNo = nextPurchaseOrderNo(unitId, departmentId, poDate);
       const res = ctx.db
         .prepare(
           `INSERT INTO purchase_orders(po_no, unit_id, department_id, requisition_id, rfq_id,

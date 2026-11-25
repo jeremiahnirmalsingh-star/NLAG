@@ -1478,6 +1478,9 @@ export async function renderPrint(ctx, options = {}) {
   const po = detail.purchaseOrder;
   const items = detail.items || [];
   const photos = detail.photos || [];
+  const totalQuantity = items.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
+  const quantityUnits = [...new Set(items.map((line) => String(line.uomCode || '').trim()).filter(Boolean))];
+  const quantitySuffix = quantityUnits.length === 1 ? ` ${quantityUnits[0]}` : '';
 
   const org = await api.get('/api/meta/bootstrap').catch(() => ({}));
   const s = org.settings || {};
@@ -1675,7 +1678,7 @@ export async function renderPrint(ctx, options = {}) {
           </table>
         </div>
 
-        <div class="rp-total-row rp-item-count"><span>Total No. of Items</span><span>${items.length}</span></div>
+        <div class="rp-total-row rp-item-count"><span>Total Quantity</span><span>${num(totalQuantity)}${esc(quantitySuffix)}</span></div>
         <div class="rp-amount-words"><b>Amount in Words :</b> ${esc(amountInWords(po.totalAmount))}</div>
 
         ${photos.length ? `
