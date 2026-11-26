@@ -75,6 +75,10 @@ $env:PORT = "3000"
 
 `server/index.js` accepts a POST/PUT/DELETE when the browser `Origin` matches an explicit `ABMDAS_ALLOWED_ORIGINS` entry, or when it matches any host in the forwarded-host chain. This avoids false `403 Cross-origin request blocked` errors when Vercel and Tailscale both rewrite host headers.
 
+### Driver attendance
+
+Driver attendance uses a **9-hour standard duty day**. `server/routes/fleet.js` exports that value as `standardHours` to the dashboard and attendance APIs. Extra hours are `max(0, worked hours - 9)`, stored per day in `fleet_driver_attendance.extra_hours`.
+
 ### Tailscale Funnel
 
 The backend is exposed with:
@@ -138,7 +142,7 @@ These checks were run against the live deployment:
 - [x] Login with `admin` / `Admin@123` through the Vercel UI
 - [x] Login response returns `sessionTimeoutMs: 1800000` (30 minutes)
 - [x] `Set-Cookie` is `HttpOnly; SameSite=Lax; Secure`
-- [x] `https://abmdas.vercel.app/sw.js` contains `abmdas-shell-v47`
+- [x] `https://abmdas.vercel.app/sw.js` contains `abmdas-shell-v62`
 - [x] Served `css/app.css` matches the repository copy after newline normalization
 - [x] PO `PO/NLAGC/MUSIC/26-27/0058` opens with total `₹25,532.00`, taxable `₹21,637.29`, SGST/CGST `₹1,947.36` each, and round off `0`
 - [x] PO print has no QR, uses the `Discount` label, keeps the large signature band, and retains the A4 print rules
@@ -157,4 +161,4 @@ These checks were run against the live deployment:
 | Health works on Tailscale URL but not Vercel URL | `vercel.json` rewrite points at the wrong host | Confirm destination is `https://abmdas-api.tail8b0493.ts.net/api/:path*`, then push/redeploy |
 | Data resets | `ABMDAS_DATA_DIR` not set to `C:\abmdas-data` | Restore the env var in the supervisor and restart |
 | Blank page or static 404 | Vercel Output Directory not `public` | Set Output Directory to `public` and redeploy |
-| Stale UI after a release | Service worker cache | Keep cache name `abmdas-shell-v47`; hard-refresh once if needed |
+| Stale UI after a release | Service worker cache | Keep cache name `abmdas-shell-v62`; hard-refresh once if needed |

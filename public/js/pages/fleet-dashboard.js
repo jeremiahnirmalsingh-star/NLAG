@@ -98,7 +98,7 @@ export async function render(ctx) {
 
     <div class="card mt-16">
       <div class="card-head">
-        <div><h3>Driver attendance &amp; extra hours</h3><div class="sub">Worked beyond ${hoursText(attendance.standardHours || 8)} hours per duty day · approved entries</div></div>
+        <div><h3>Driver attendance &amp; extra hours</h3><div class="sub">Worked beyond ${hoursText(attendance.standardHours || 9)} hours per duty day · approved entries</div></div>
         <a class="btn btn-sm" href="#/fleet/attendance">${icon('clock')} Attendance register</a>
       </div>
       <div class="grid grid-4">

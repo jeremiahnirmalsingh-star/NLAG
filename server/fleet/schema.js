@@ -153,7 +153,7 @@ function ensureFleetSchema(db) {
 
     /* Daily driver attendance. Worked and extra hours are stored so reports do
        not have to re-derive them from time strings. Extra hours are hours over
-       the standard 8-hour day. */
+       the standard 9-hour duty day. */
     CREATE TABLE IF NOT EXISTS fleet_driver_attendance (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       driver_id       INTEGER NOT NULL REFERENCES employees(id),

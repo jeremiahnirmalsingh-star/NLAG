@@ -39,7 +39,7 @@ export async function renderAttendance(ctx) {
   ]);
 
   const canManage = !!res.canManage || !!meta.permissions?.manageBookings;
-  const standardHours = Number(res.standardHours) || 8;
+  const standardHours = Number(res.standardHours) || 9;
   const drivers = res.drivers || [];
   const records = res.attendance || [];
   const units = meta.units || [];

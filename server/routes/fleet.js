@@ -152,7 +152,7 @@ function normalizeVehicleCompliance(values) {
   return values;
 }
 
-const STANDARD_DAY_HOURS = 8;
+const STANDARD_DAY_HOURS = 9;
 
 function timeField(value, field) {
   const raw = String(value == null ? '' : value).trim();
