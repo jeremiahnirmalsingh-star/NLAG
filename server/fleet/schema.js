@@ -43,17 +43,36 @@ function ensureFleetSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_fleet_areas_name ON fleet_areas(name COLLATE NOCASE);
 
     CREATE TABLE IF NOT EXISTS fleet_vehicles (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      reg_no     TEXT NOT NULL UNIQUE,
-      model      TEXT NOT NULL,
-      seats      INTEGER NOT NULL DEFAULT 1,
-      status     TEXT NOT NULL DEFAULT 'ACTIVE'
-                   CHECK (status IN ('ACTIVE','IN_SERVICE')),
-      active     INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      deleted_by INTEGER REFERENCES users(id)
+      id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+      reg_no                   TEXT NOT NULL UNIQUE,
+      model                    TEXT NOT NULL,
+      seats                    INTEGER NOT NULL DEFAULT 1,
+      status                   TEXT NOT NULL DEFAULT 'ACTIVE'
+                                 CHECK (status IN ('ACTIVE','IN_SERVICE')),
+      active                   INTEGER NOT NULL DEFAULT 1,
+      engine_no                TEXT NOT NULL DEFAULT '',
+      chassis_no               TEXT NOT NULL DEFAULT '',
+      fuel_type                TEXT NOT NULL DEFAULT '',
+      registered_date          TEXT,
+      registration_expiry_date TEXT,
+      insurance_policy_no      TEXT NOT NULL DEFAULT '',
+      insurer                  TEXT NOT NULL DEFAULT '',
+      insurance_date           TEXT,
+      insurance_expiry_date    TEXT,
+      permit_no                TEXT NOT NULL DEFAULT '',
+      permit_authority         TEXT NOT NULL DEFAULT '',
+      permit_date              TEXT,
+      permit_expiry_date       TEXT,
+      road_tax_no              TEXT NOT NULL DEFAULT '',
+      road_tax_date            TEXT,
+      road_tax_expiry_date     TEXT,
+      pollution_cert_no        TEXT NOT NULL DEFAULT '',
+      pollution_cert_date      TEXT,
+      pollution_expiry_date    TEXT,
+      created_at               TEXT NOT NULL,
+      updated_at               TEXT NOT NULL,
+      deleted_at               TEXT,
+      deleted_by               INTEGER REFERENCES users(id)
     );
 
     /* Named fleet_trips so an older database can keep its legacy table
@@ -151,6 +170,21 @@ function ensureFleetSchema(db) {
   addColumn('fleet_trips', 'unit_id', 'INTEGER REFERENCES units(id)');
   addColumn('fleet_vehicle_expenses', 'unit_id', 'INTEGER REFERENCES units(id)');
 
+  /* Vehicle compliance details are stored on the vehicle master, which is the
+     record the transport incharge maintains. All additions are nullable or
+     defaulted so existing vehicles keep working unchanged. */
+  const vehicleTextColumns = [
+    'engine_no', 'chassis_no', 'fuel_type', 'insurance_policy_no', 'insurer',
+    'permit_no', 'permit_authority', 'road_tax_no', 'pollution_cert_no',
+  ];
+  for (const column of vehicleTextColumns) addColumn('fleet_vehicles', column, "TEXT NOT NULL DEFAULT ''");
+  const vehicleDateColumns = [
+    'registered_date', 'registration_expiry_date', 'insurance_date', 'insurance_expiry_date',
+    'permit_date', 'permit_expiry_date', 'road_tax_date', 'road_tax_expiry_date',
+    'pollution_cert_date', 'pollution_expiry_date',
+  ];
+  for (const column of vehicleDateColumns) addColumn('fleet_vehicles', column, 'TEXT');
+
   /* A NULL unit_id means "shared by all units", so older Fleet records stay
      visible while newly created records follow the caller's unit membership. */
   db.exec(`
@@ -158,6 +192,11 @@ function ensureFleetSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_fleet_vehicles_unit ON fleet_vehicles(unit_id);
     CREATE INDEX IF NOT EXISTS idx_fleet_trips_unit ON fleet_trips(unit_id);
     CREATE INDEX IF NOT EXISTS idx_fleet_expenses_unit ON fleet_vehicle_expenses(unit_id);
+    CREATE INDEX IF NOT EXISTS idx_fleet_vehicle_reg_expiry ON fleet_vehicles(registration_expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_fleet_vehicle_insurance_expiry ON fleet_vehicles(insurance_expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_fleet_vehicle_permit_expiry ON fleet_vehicles(permit_expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_fleet_vehicle_tax_expiry ON fleet_vehicles(road_tax_expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_fleet_vehicle_pollution_expiry ON fleet_vehicles(pollution_expiry_date);
   `);
 
   /* Audited marker for the shared-master design. INSERT OR IGNORE keeps restarts
@@ -168,6 +207,9 @@ function ensureFleetSchema(db) {
   db.prepare(
     'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
   ).run('migration.fleet_operations.v1', new Date().toISOString());
+  db.prepare(
+    'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
+  ).run('migration.fleet_vehicle_compliance.v1', new Date().toISOString());
 }
 
 function ensureTripLocationColumns(db) {

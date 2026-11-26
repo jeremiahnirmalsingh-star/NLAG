@@ -8,6 +8,7 @@
  *   - AMC renewal (assets whose amc_end_date falls within N days)
  *   - Stock reorder (items whose total stock balance < reorder_level)
  *   - Consumable expiry (items with expiry_tracking and stock with expiry within N days)
+ *   - Fleet vehicle compliance expiry (registration, insurance, permit, road tax, pollution)
  *
  * Notifications are de-duplicated by (user, title, entity) within a 24-hour window
  * so repeated runs do not spam users.
@@ -31,6 +32,49 @@ function recipientIds(db) {
   for (const r of roles) ids.push(...userIdsByRole(r));
   return [...new Set(ids)];
 }
+
+/* Vehicle expiry notices follow the approval configuration already saved in
+   the system: core workflow stage roles, procurement workflow stage roles,
+   roles with Fleet master management, and Transport/Administration users. */
+function vehicleRecipientIds(db) {
+  const ids = new Set();
+  const collect = (rows) => rows.forEach((r) => ids.add(Number(r.id)));
+  collect(db.prepare(
+    `SELECT DISTINCT u.id
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       JOIN workflow_stages s ON s.role_id = u.role_id
+       JOIN workflow_rules wr ON wr.id = s.rule_id AND wr.active = 1
+      WHERE u.status = 'Active'`
+  ).all());
+  collect(db.prepare(
+    `SELECT DISTINCT u.id
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       JOIN procurement_workflow_stages s ON s.role_id = u.role_id
+       JOIN procurement_workflow_rules wr ON wr.id = s.rule_id AND wr.active = 1
+      WHERE u.status = 'Active'`
+  ).all());
+  collect(db.prepare(
+    `SELECT DISTINCT u.id
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       JOIN role_permissions rp ON rp.role_id = r.id
+      WHERE u.status = 'Active' AND rp.permission_key = 'fleet.master.manage'`
+  ).all());
+  collect(db.prepare(
+    "SELECT id FROM users WHERE status = 'Active' AND (department LIKE '%Transport%' OR department LIKE '%Admin%')"
+  ).all());
+  return [...ids].filter(Boolean);
+}
+
+const VEHICLE_EXPIRIES = [
+  { column: 'registration_expiry_date', label: 'Registration' },
+  { column: 'insurance_expiry_date', label: 'Insurance' },
+  { column: 'permit_expiry_date', label: 'Permit' },
+  { column: 'road_tax_expiry_date', label: 'Road tax' },
+  { column: 'pollution_expiry_date', label: 'Pollution certificate' },
+];
 
 function alreadyNotified(db, userId, title, link) {
   const row = db.prepare(
@@ -148,13 +192,53 @@ function consumableExpiryAlerts(db) {
   return count;
 }
 
+function vehicleComplianceAlerts(db) {
+  const recipients = vehicleRecipientIds(db);
+  const current = today();
+  let count = 0;
+  for (const item of VEHICLE_EXPIRIES) {
+    const expired = db.prepare(
+      `SELECT id, reg_no, ${item.column} AS expiry
+         FROM fleet_vehicles
+        WHERE deleted_at IS NULL AND ${item.column} IS NOT NULL AND ${item.column} < ?`
+    ).all(current);
+    for (const r of expired) {
+      const title = `${r.reg_no} ${item.label} expired`;
+      const link = `#/fleet/masters?model=vehicles&vehicleId=${r.id}`;
+      const msg = `Vehicle ${r.reg_no} ${item.label.toLowerCase()} expired on ${r.expiry}. Renew and update the vehicle master.`;
+      count += push(db, recipients, title, msg, link);
+    }
+
+    let lower = current;
+    for (const days of WINDOWS) {
+      const upper = addDays(current, days);
+      const rows = db.prepare(
+        `SELECT id, reg_no, ${item.column} AS expiry
+           FROM fleet_vehicles
+          WHERE deleted_at IS NULL AND ${item.column} > ? AND ${item.column} <= ?`
+      ).all(lower, upper);
+      for (const r of rows) {
+        const title = `${r.reg_no} ${item.label} expiring in ${days} days`;
+        const link = `#/fleet/masters?model=vehicles&vehicleId=${r.id}`;
+        const msg = `Vehicle ${r.reg_no} ${item.label.toLowerCase()} expires on ${r.expiry}. Renew before the expiry date.`;
+        count += push(db, recipients, title, msg, link);
+      }
+      lower = upper;
+    }
+  }
+  return count;
+}
+
 function runAll(db) {
   return {
     warranty: warrantyAlerts(db),
     amc: amcAlerts(db),
     stock: stockReorderAlerts(db),
     expiry: consumableExpiryAlerts(db),
+    vehicle: vehicleComplianceAlerts(db),
   };
 }
 
-module.exports = { runAll, warrantyAlerts, amcAlerts, stockReorderAlerts, consumableExpiryAlerts };
+module.exports = {
+  runAll, warrantyAlerts, amcAlerts, stockReorderAlerts, consumableExpiryAlerts, vehicleComplianceAlerts,
+};

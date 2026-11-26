@@ -9,7 +9,7 @@ export async function renderList(ctx) {
 
   ctx.view.innerHTML = `
     <div class="page-head">
-      <div><h1>Alerts</h1><div class="sub">Warranty, AMC, stock and expiry alerts</div></div>
+      <div><h1>Alerts</h1><div class="sub">Warranty, AMC, stock, expiry and vehicle document expiry alerts</div></div>
       <div class="page-actions">
         <button class="btn btn-primary" type="button" data-run>${icon('refresh')} Run alert check</button>
       </div>
@@ -37,8 +37,8 @@ export async function renderList(ctx) {
   ctx.view.querySelector('[data-run]').addEventListener('click', async () => {
     try {
       const r = await api.post('/api/procurement/alerts/run', {});
-      const total = (r.warranty || 0) + (r.amc || 0) + (r.stock || 0) + (r.expiry || 0);
-      resultBox.innerHTML = `${icon('check')} Alert check complete: ${total} new notification(s) generated (warranty: ${r.warranty}, AMC: ${r.amc}, stock: ${r.stock}, expiry: ${r.expiry}).`;
+      const total = (r.warranty || 0) + (r.amc || 0) + (r.stock || 0) + (r.expiry || 0) + (r.vehicle || 0);
+      resultBox.innerHTML = `${icon('check')} Alert check complete: ${total} new notification(s) generated (warranty: ${r.warranty}, AMC: ${r.amc}, stock: ${r.stock}, expiry: ${r.expiry}, vehicle documents: ${r.vehicle || 0}).`;
       resultBox.classList.remove('hidden');
       setTimeout(() => navigate('/alerts'), 1500);
     } catch (e) {

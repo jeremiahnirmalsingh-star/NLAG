@@ -20,7 +20,7 @@ const MASTER_MODELS = {
   vehicles: {
     label: 'Vehicles',
     singular: 'Vehicle',
-    columns: ['Registration', 'Model', 'Seats', 'Unit', 'Linked asset', 'Status'],
+    columns: ['Registration', 'Model', 'Seats', 'Unit', 'Linked asset', 'Compliance', 'Status'],
   },
   mapPoints: {
     label: 'Map Points',
@@ -416,6 +416,29 @@ export async function renderBookingDetail(ctx, options = {}) {
 
 /* ------------------------------- Masters ---------------------------- */
 
+const VEHICLE_EXPIRIES = [
+  ['Registration', 'registrationExpiryDate'],
+  ['Insurance', 'insuranceExpiryDate'],
+  ['Permit', 'permitExpiryDate'],
+  ['Road tax', 'roadTaxExpiryDate'],
+  ['Pollution', 'pollutionExpiryDate'],
+];
+
+function complianceCell(record) {
+  const dates = VEHICLE_EXPIRIES
+    .map(([label, key]) => ({ label, date: record[key] }))
+    .filter((item) => item.date)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (!dates.length) return '—';
+  const next = dates[0];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.ceil((new Date(`${next.date}T00:00:00`).getTime() - today.getTime()) / 86400000);
+  const tone = days < 0 ? 'rejected' : days <= 30 ? 'pending' : 'active';
+  const label = days < 0 ? 'Expired' : days <= 30 ? 'Due soon' : 'Valid';
+  return `${esc(next.label)} ${esc(next.date)} <span class="badge ${tone}">${label}</span>`;
+}
+
 function masterFields(model, record, meta = {}) {
   const v = (key, fallback = '') => (record ? record[key] ?? fallback : fallback);
   const activeOptions = [
@@ -447,6 +470,8 @@ function masterFields(model, record, meta = {}) {
       ${field({ label: 'Status', name: 'active', type: 'select', value: v('active', 1), options: activeOptions })}`;
   }
   if (model === 'vehicles') {
+    const fuelOptions = ['', 'Petrol', 'Diesel', 'CNG', 'Electric', 'Hybrid', 'Other']
+      .map((value) => ({ value, label: value || '— Not specified —' }));
     return `
       ${field({ label: 'Registration number', name: 'regNo', value: v('regNo'), required: true, placeholder: 'NL-01-AB-1234' })}
       ${field({ label: 'Model', name: 'model', value: v('model'), required: true })}
@@ -458,7 +483,30 @@ function masterFields(model, record, meta = {}) {
       })}
       ${unitField()}
       ${field({ label: 'Status', name: 'status', type: 'select', value: v('status', 'ACTIVE'), options: [{ value: 'ACTIVE', label: 'Active' }, { value: 'IN_SERVICE', label: 'In service' }] })}
-      ${field({ label: 'Availability', name: 'active', type: 'select', value: v('active', 1), options: activeOptions })}`;
+      ${field({ label: 'Availability', name: 'active', type: 'select', value: v('active', 1), options: activeOptions })}
+
+      <div class="span-2 section-title">Vehicle identity</div>
+      ${field({ label: 'Engine number', name: 'engineNo', value: v('engineNo'), placeholder: 'Engine number' })}
+      ${field({ label: 'Chassis number', name: 'chassisNo', value: v('chassisNo'), placeholder: 'Chassis / VIN number' })}
+      ${field({ label: 'Fuel type', name: 'fuelType', type: 'select', value: v('fuelType', ''), options: fuelOptions })}
+      ${field({ label: 'Vehicle registered date', name: 'registeredDate', type: 'date', value: v('registeredDate', '') })}
+
+      <div class="span-2 section-title">Registration & statutory documents</div>
+      ${field({ label: 'Registration expiry date', name: 'registrationExpiryDate', type: 'date', value: v('registrationExpiryDate', ''), hint: 'Renewal reminders are sent to the configured approvers.' })}
+      ${field({ label: 'Insurance policy number', name: 'insurancePolicyNo', value: v('insurancePolicyNo') })}
+      ${field({ label: 'Insurer', name: 'insurer', value: v('insurer') })}
+      ${field({ label: 'Insurance from date', name: 'insuranceDate', type: 'date', value: v('insuranceDate', '') })}
+      ${field({ label: 'Insurance expiry date', name: 'insuranceExpiryDate', type: 'date', value: v('insuranceExpiryDate', '') })}
+      ${field({ label: 'Permit number', name: 'permitNo', value: v('permitNo') })}
+      ${field({ label: 'Permit authority', name: 'permitAuthority', value: v('permitAuthority') })}
+      ${field({ label: 'Permit from date', name: 'permitDate', type: 'date', value: v('permitDate', '') })}
+      ${field({ label: 'Permit expiry date', name: 'permitExpiryDate', type: 'date', value: v('permitExpiryDate', '') })}
+      ${field({ label: 'Road tax receipt number', name: 'roadTaxNo', value: v('roadTaxNo') })}
+      ${field({ label: 'Road tax paid date', name: 'roadTaxDate', type: 'date', value: v('roadTaxDate', '') })}
+      ${field({ label: 'Road tax expiry date', name: 'roadTaxExpiryDate', type: 'date', value: v('roadTaxExpiryDate', '') })}
+      ${field({ label: 'Pollution certificate number', name: 'pollutionCertNo', value: v('pollutionCertNo') })}
+      ${field({ label: 'Pollution certificate date', name: 'pollutionCertDate', type: 'date', value: v('pollutionCertDate', '') })}
+      ${field({ label: 'Pollution certificate expiry', name: 'pollutionExpiryDate', type: 'date', value: v('pollutionExpiryDate', '') })}`;
   }
   return '';
 }
@@ -502,7 +550,7 @@ function masterCell(model, record, meta = {}) {
     const asset = record.assetId
       ? esc((meta.assets || []).find((a) => String(a.id) === String(record.assetId))?.code || `#${record.assetId}`)
       : '—';
-    return [record.regNo, record.model, record.seats, unit, asset, `${record.status}${record.active ? '' : ' · Inactive'}`];
+    return [record.regNo, record.model, record.seats, unit, asset, complianceCell(record), `${record.status}${record.active ? '' : ' · Inactive'}`];
   }
   return [];
 }
@@ -525,6 +573,7 @@ export async function renderMasters(ctx) {
       <div class="page-actions"><a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a></div>
     </div>
     <div class="alert alert-info">Departments and drivers come from the shared <a href="#/employees">Employees</a> and <a href="#/org">Organization</a> masters. Mark an employee as a driver in their employee record.</div>
+    ${model === 'vehicles' ? '<div class="alert alert-info">Expiry dates on the vehicle form generate reminders on the <a href="#/alerts">Alerts</a> page for the configured approval roles, transport incharge/head and administration department.</div>' : ''}
     <div class="page-actions" style="margin-bottom:12px">${tabs}</div>
     <div class="card">
       <div class="card-head">

@@ -18,6 +18,29 @@ const { transaction, rowOr404 } = require('../procurement/shared');
    trip-specific data: saved map points and vehicles. The old `areas` key is
    kept as a hidden legacy alias because older bookings point at fleet_areas. */
 const LOCATION_FIELDS = ['name', 'address', 'address_id', 'lat', 'lng', 'maps_url', 'active', 'unit_id'];
+
+/* Vehicle compliance fields. They live on the vehicle master because the
+   transport incharge already maintains that record and it links to the common
+   asset register through asset_id. */
+const VEHICLE_TEXT_FIELDS = {
+  engine_no: 60,
+  chassis_no: 60,
+  fuel_type: 30,
+  insurance_policy_no: 80,
+  insurer: 120,
+  permit_no: 80,
+  permit_authority: 120,
+  road_tax_no: 80,
+  pollution_cert_no: 80,
+};
+const VEHICLE_DATE_FIELDS = [
+  'registered_date', 'registration_expiry_date', 'insurance_date', 'insurance_expiry_date',
+  'permit_date', 'permit_expiry_date', 'road_tax_date', 'road_tax_expiry_date',
+  'pollution_cert_date', 'pollution_expiry_date',
+];
+const VEHICLE_COMPLIANCE_FIELDS = [...Object.keys(VEHICLE_TEXT_FIELDS), ...VEHICLE_DATE_FIELDS];
+const camelKey = (key) => key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+
 const MASTERS = {
   mapPoints: {
     table: 'fleet_areas',
@@ -34,7 +57,10 @@ const MASTERS = {
   vehicles: {
     table: 'fleet_vehicles',
     label: 'Vehicle',
-    fields: ['reg_no', 'model', 'seats', 'status', 'asset_id', 'active', 'unit_id'],
+    fields: [
+      'reg_no', 'model', 'seats', 'status', 'asset_id', 'active', 'unit_id',
+      ...VEHICLE_COMPLIANCE_FIELDS,
+    ],
     unique: ['reg_no'],
     required: ['reg_no', 'model', 'seats'],
   },
@@ -44,6 +70,7 @@ const COLUMN_MAP = {
   name: 'name', address: 'address', address_id: 'address_id', lat: 'lat', lng: 'lng',
   maps_url: 'maps_url', reg_no: 'reg_no', model: 'model', seats: 'seats',
   status: 'status', asset_id: 'asset_id', active: 'active', unit_id: 'unit_id',
+  ...Object.fromEntries(VEHICLE_COMPLIANCE_FIELDS.map((field) => [field, field])),
 };
 
 /* The API speaks camelCase everywhere else; accept both spellings so a master
@@ -56,6 +83,7 @@ const API_TO_COLUMN = {
   addressId: 'address_id',
   assetId: 'asset_id',
   unitId: 'unit_id',
+  ...Object.fromEntries(VEHICLE_COMPLIANCE_FIELDS.map((field) => [camelKey(field), field])),
 };
 
 function normalizeMasterBody(body) {
@@ -92,6 +120,29 @@ function decimal(value, field, { min = 0, required = false } = {}) {
     throw badRequest(`${field} must be a number of at least ${min}.`);
   }
   return round2(n);
+}
+
+function dateField(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const raw = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    throw badRequest(`${field} must be a date in YYYY-MM-DD format.`);
+  }
+  const parsed = new Date(`${raw}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== raw) {
+    throw badRequest(`${field} is not a valid date.`);
+  }
+  return raw;
+}
+
+function normalizeVehicleCompliance(values) {
+  for (const [field, max] of Object.entries(VEHICLE_TEXT_FIELDS)) {
+    if (field in values) values[field] = text(values[field], max);
+  }
+  for (const field of VEHICLE_DATE_FIELDS) {
+    if (field in values) values[field] = dateField(values[field], field.replace(/_/g, ' '));
+  }
+  return values;
 }
 
 /* Operating cost categories. Stored as short codes; the labels are shared
@@ -181,6 +232,12 @@ function masterOut(row, model) {
     };
   }
   if (model === 'vehicles') {
+    const compliance = {};
+    for (const field of VEHICLE_COMPLIANCE_FIELDS) {
+      compliance[camelKey(field)] = VEHICLE_DATE_FIELDS.includes(field)
+        ? (row[field] || null)
+        : (row[field] || '');
+    }
     return {
       ...base,
       regNo: row.reg_no,
@@ -189,6 +246,7 @@ function masterOut(row, model) {
       status: row.status,
       assetId: row.asset_id || null,
       unitId: row.unit_id || null,
+      ...compliance,
     };
   }
   return base;
@@ -955,6 +1013,7 @@ module.exports = function registerFleetRoutes(router) {
     if (model === 'vehicles') {
       values.seats = integer(values.seats, 'Seats', { min: 1, max: 100, required: true });
       values.status = ['ACTIVE', 'IN_SERVICE'].includes(text(values.status || 'ACTIVE')) ? text(values.status || 'ACTIVE') : 'ACTIVE';
+      normalizeVehicleCompliance(values);
     }
     if (model === 'areas' || model === 'mapPoints') {
       for (const key of ['lat', 'lng']) {
@@ -1005,8 +1064,11 @@ module.exports = function registerFleetRoutes(router) {
     for (const field of config.fields) {
       if (b[field] !== undefined) values[field] = b[field];
     }
-    if (model === 'vehicles' && values.seats !== undefined) {
-      values.seats = integer(values.seats, 'Seats', { min: 1, max: 100, required: true });
+    if (model === 'vehicles') {
+      if (values.seats !== undefined) {
+        values.seats = integer(values.seats, 'Seats', { min: 1, max: 100, required: true });
+      }
+      normalizeVehicleCompliance(values);
     }
     if (model === 'areas' || model === 'mapPoints') {
       for (const key of ['lat', 'lng']) {
