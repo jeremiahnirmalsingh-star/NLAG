@@ -15,18 +15,26 @@ const {
 const { transaction, rowOr404 } = require('../procurement/shared');
 
 /* People and departments are common ABMDAS masters. Fleet Masters only owns
-   trip-specific data: pickup/drop areas and vehicles. */
+   trip-specific data: saved map points and vehicles. The old `areas` key is
+   kept as a hidden legacy alias because older bookings point at fleet_areas. */
+const LOCATION_FIELDS = ['name', 'address', 'address_id', 'lat', 'lng', 'maps_url', 'active', 'unit_id'];
 const MASTERS = {
+  mapPoints: {
+    table: 'fleet_areas',
+    label: 'Map Point',
+    fields: LOCATION_FIELDS,
+    required: ['name'],
+  },
   areas: {
     table: 'fleet_areas',
     label: 'Area',
-    fields: ['name', 'address', 'address_id', 'lat', 'lng', 'maps_url', 'active'],
+    fields: LOCATION_FIELDS,
     required: ['name'],
   },
   vehicles: {
     table: 'fleet_vehicles',
     label: 'Vehicle',
-    fields: ['reg_no', 'model', 'seats', 'status', 'asset_id', 'active'],
+    fields: ['reg_no', 'model', 'seats', 'status', 'asset_id', 'active', 'unit_id'],
     unique: ['reg_no'],
     required: ['reg_no', 'model', 'seats'],
   },
@@ -47,6 +55,7 @@ const API_TO_COLUMN = {
   mapsUrl: 'maps_url',
   addressId: 'address_id',
   assetId: 'asset_id',
+  unitId: 'unit_id',
 };
 
 function normalizeMasterBody(body) {
@@ -120,10 +129,13 @@ function expenseOut(db, row) {
   };
 }
 
-function expenseValues(db, body) {
+function expenseValues(db, body, unitIds = null) {
   const b = body || {};
   const vehicleId = integer(b.vehicleId, 'Vehicle', { required: true, min: 1, max: 100000000 });
-  if (!db.prepare('SELECT id FROM fleet_vehicles WHERE id = ? AND deleted_at IS NULL').get(vehicleId)) {
+  const vehicle = db
+    .prepare('SELECT id, unit_id FROM fleet_vehicles WHERE id = ? AND deleted_at IS NULL')
+    .get(vehicleId);
+  if (!vehicle || (unitIds !== null && !unitVisible(unitIds, vehicle.unit_id))) {
     throw badRequest('Choose a valid vehicle.');
   }
   const date = text(b.date, 10);
@@ -135,6 +147,7 @@ function expenseValues(db, body) {
   const amount = decimal(b.amount, 'Amount', { required: true, min: 0.01 });
   return {
     vehicle_id: vehicleId,
+    unit_id: vehicle.unit_id ?? null,
     expense_date: date,
     category,
     amount,
@@ -155,7 +168,7 @@ function masterOut(row, model) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-  if (model === 'areas') {
+  if (model === 'areas' || model === 'mapPoints') {
     return {
       ...base,
       name: row.name,
@@ -164,6 +177,7 @@ function masterOut(row, model) {
       lng: row.lng == null ? null : Number(row.lng),
       mapsUrl: row.maps_url || '',
       addressId: row.address_id || null,
+      unitId: row.unit_id || null,
     };
   }
   if (model === 'vehicles') {
@@ -174,9 +188,47 @@ function masterOut(row, model) {
       seats: Number(row.seats) || 0,
       status: row.status,
       assetId: row.asset_id || null,
+      unitId: row.unit_id || null,
     };
   }
   return base;
+}
+
+/* Unit scoping. A NULL unit_id is shared by every unit so older Fleet records
+   stay visible; a set unit_id is visible only to members of that unit. */
+function callerUnitIds(ctx) {
+  return [...new Set((ctx.unitIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+}
+
+function visibleUnitClause(column, unitIds) {
+  const ids = [...new Set((unitIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (!ids.length) return '0';
+  return `(${column} IS NULL OR ${column} IN (${ids.join(',')}))`;
+}
+
+function unitVisible(unitIds, unitId) {
+  if (unitId === null || unitId === undefined || unitId === '') return true;
+  return (unitIds || []).map(Number).includes(Number(unitId));
+}
+
+function selectedUnitId(ctx, value) {
+  if (value === undefined) return callerUnitIds(ctx)[0] ?? null;
+  if (value === null || value === '') return null;
+  const id = integer(value, 'Unit', { min: 1, max: 100000000 });
+  if (!callerUnitIds(ctx).includes(id)) throw new HttpError(403, 'You are not a member of the selected unit.');
+  return id;
+}
+
+function assertUnitVisible(ctx, unitId) {
+  if (!unitVisible(ctx.unitIds, unitId)) throw new HttpError(403, 'This record belongs to another unit.');
+}
+
+function callerUnits(db, ctx) {
+  const ids = callerUnitIds(ctx);
+  if (!ids.length) return [];
+  return db
+    .prepare(`SELECT id, name FROM units WHERE active = 1 AND id IN (${ids.join(',')}) ORDER BY name COLLATE NOCASE`)
+    .all();
 }
 
 /* Drivers are common employees with an additive driving qualification. A
@@ -196,6 +248,7 @@ function driverRows(db, unitIds = []) {
          FROM employees e
          JOIN employee_driver_profiles p ON p.employee_id = e.id
         WHERE e.deleted_at IS NULL AND e.status = 'Active' AND p.active = 1
+          AND TRIM(COALESCE(p.license_no, '')) <> ''
           AND ${employeeUnitClause(unitIds)}
         ORDER BY e.name COLLATE NOCASE`
     )
@@ -210,19 +263,35 @@ function driverRows(db, unitIds = []) {
     }));
 }
 
+function driverEmployeeId(db, user) {
+  if (!user || !user.employee_id) return null;
+  const row = db
+    .prepare(
+      `SELECT e.id
+         FROM employees e
+         JOIN employee_driver_profiles p ON p.employee_id = e.id
+        WHERE e.employee_code = ? COLLATE NOCASE
+          AND e.deleted_at IS NULL AND e.status = 'Active'
+          AND p.active = 1 AND TRIM(COALESCE(p.license_no, '')) <> ''`
+    )
+    .get(String(user.employee_id).trim());
+  return row ? row.id : null;
+}
+
 function activeDriver(db, id, unitIds = []) {
   return db
     .prepare(
       `SELECT e.id, e.name FROM employees e
          JOIN employee_driver_profiles p ON p.employee_id = e.id
         WHERE e.id = ? AND e.deleted_at IS NULL AND e.status = 'Active' AND p.active = 1
+          AND TRIM(COALESCE(p.license_no, '')) <> ''
           AND ${employeeUnitClause(unitIds)}`
     )
     .get(Number(id));
 }
 
 function normalizeLinks(values) {
-  for (const key of ['address_id', 'asset_id']) {
+  for (const key of ['address_id', 'asset_id', 'unit_id']) {
     if (values[key] === undefined) continue;
     values[key] = values[key] === '' || values[key] == null
       ? null
@@ -230,25 +299,29 @@ function normalizeLinks(values) {
   }
 }
 
-function masterRows(db, model) {
+function masterRows(db, model, unitIds = null) {
   const config = MASTERS[model];
+  const scoped = config.fields.includes('unit_id') && unitIds !== null;
+  const where = `deleted_at IS NULL${scoped ? ` AND ${visibleUnitClause('unit_id', unitIds)}` : ''}`;
   return db
-    .prepare(`SELECT * FROM ${config.table} WHERE deleted_at IS NULL ORDER BY id ASC`)
+    .prepare(`SELECT * FROM ${config.table} WHERE ${where} ORDER BY id ASC`)
     .all()
     .map((row) => masterOut(row, model));
 }
 
-function masterById(db, model, id) {
+function masterById(db, model, id, unitIds = null) {
   const config = MASTERS[model];
+  const scoped = config.fields.includes('unit_id') && unitIds !== null;
+  const where = `id = ? AND deleted_at IS NULL${scoped ? ` AND ${visibleUnitClause('unit_id', unitIds)}` : ''}`;
   return rowOr404(
-    db.prepare(`SELECT * FROM ${config.table} WHERE id = ? AND deleted_at IS NULL`).get(Number(id)),
+    db.prepare(`SELECT * FROM ${config.table} WHERE ${where}`).get(Number(id)),
     `${config.label} not found.`
   );
 }
 
-/* A booking normally stores the address typed by the requester. Coordinates
-   are optional: when a Google Maps share link is used they can be supplied,
-   otherwise the address itself is used to open the route in Google Maps. */
+/* A booking normally stores the address typed by the requester or chosen from
+   a saved map point. Coordinates are optional for typed addresses; the address
+   itself is used to open the route in Google Maps. */
 function coordinate(value, label) {
   if (value === undefined || value === null || value === '') return null;
   const n = Number(value);
@@ -281,11 +354,13 @@ function locationFromBody(body, kind) {
   };
 }
 
-function locationFromArea(db, areaId, kind) {
+function locationFromArea(db, areaId, kind, unitIds = null) {
+  const scope = unitIds === null ? '' : ` AND ${visibleUnitClause('unit_id', unitIds)}`;
   const area = db
-    .prepare('SELECT id, name, address, lat, lng, maps_url FROM fleet_areas WHERE id = ? AND deleted_at IS NULL AND active = 1')
+    .prepare(`SELECT id, name, address, lat, lng, maps_url FROM fleet_areas
+               WHERE id = ? AND deleted_at IS NULL AND active = 1${scope}`)
     .get(Number(areaId));
-  if (!area) throw badRequest(`Choose a valid ${kind} location.`);
+  if (!area) throw badRequest(`Choose a valid ${kind} map point.`);
   return {
     id: area.id,
     name: area.name,
@@ -388,6 +463,7 @@ function freeResources(db, booking, unitIds = []) {
     .prepare(
       `SELECT id, reg_no, model, seats FROM fleet_vehicles
         WHERE deleted_at IS NULL AND active = 1 AND status = 'ACTIVE' AND seats >= ?
+          AND ${visibleUnitClause('unit_id', unitIds)}
         ORDER BY seats ASC, model COLLATE NOCASE`
     )
     .all(booking.passengers)
@@ -410,25 +486,55 @@ function freeResources(db, booking, unitIds = []) {
  * For each vehicle: cost per km = total expenses / total km of trips that have
  * both odometer readings. Each trip receives a share of every expense in
  * proportion to its distance. Nothing is linked at expense-entry time.
- * Expenses on a vehicle with no measured km are reported as unallocated.
+ * Expenses and trips without usable km readings are reported separately as
+ * "not yet apportioned" so they can be corrected instead of silently ignored.
  */
-function tripCostReport(db) {
+function tripCostReport(db, unitIds = []) {
+  const tripScope = visibleUnitClause('t.unit_id', unitIds);
+  const expenseScope = visibleUnitClause('unit_id', unitIds);
+  const vehicleScope = visibleUnitClause('unit_id', unitIds);
+  const joins = `LEFT JOIN fleet_vehicles v ON v.id = t.vehicle_id
+         LEFT JOIN departments d ON d.id = t.department_id
+         LEFT JOIN employees e ON e.id = t.driver_id`;
+
   const trips = db
     .prepare(
       `SELECT t.*, v.reg_no, v.model, d.name AS department_name, e.name AS driver_name
          FROM fleet_trips t
-         LEFT JOIN fleet_vehicles v ON v.id = t.vehicle_id
-         LEFT JOIN departments d ON d.id = t.department_id
-         LEFT JOIN employees e ON e.id = t.driver_id
+         ${joins}
         WHERE t.status = 'COMPLETED'
           AND t.start_km IS NOT NULL AND t.end_km IS NOT NULL
           AND t.end_km > t.start_km
+          AND ${tripScope}
         ORDER BY t.completed_at DESC, t.id DESC`
     )
     .all();
 
+  const pendingTrips = db
+    .prepare(
+      `SELECT t.*, v.reg_no, v.model, d.name AS department_name, e.name AS driver_name
+         FROM fleet_trips t
+         ${joins}
+        WHERE t.status IN ('ASSIGNED', 'COMPLETED')
+          AND (t.start_km IS NULL OR t.end_km IS NULL OR COALESCE(t.end_km, 0) <= COALESCE(t.start_km, 0))
+          AND ${tripScope}
+        ORDER BY t.completed_at DESC, t.start_at DESC, t.id DESC`
+    )
+    .all()
+    .map((row) => ({
+      id: row.id,
+      bookingNo: row.booking_no,
+      status: row.status,
+      vehicleRegNo: row.reg_no || '',
+      departmentName: row.department_name || '',
+      driverName: row.driver_name || '',
+      purpose: row.purpose || '',
+      startKm: row.start_km == null ? null : round2(Number(row.start_km)),
+      endKm: row.end_km == null ? null : round2(Number(row.end_km)),
+    }));
+
   const expenses = db
-    .prepare('SELECT * FROM fleet_vehicle_expenses WHERE deleted_at IS NULL ORDER BY expense_date DESC, id DESC')
+    .prepare(`SELECT * FROM fleet_vehicle_expenses WHERE deleted_at IS NULL AND ${expenseScope} ORDER BY expense_date DESC, id DESC`)
     .all();
 
   const rows = trips.map((row) => ({
@@ -474,6 +580,8 @@ function tripCostReport(db) {
 
   const totals = {
     trips: rows.length,
+    pendingTrips: pendingTrips.length,
+    unallocatedExpenses: unallocated.length,
     distanceKm: 0,
     totalCost: 0,
   };
@@ -493,10 +601,11 @@ function tripCostReport(db) {
   totals.totalCost = round2(totals.totalCost);
   for (const category of EXPENSE_CATEGORIES) totals[category.value] = round2(totals[category.value]);
   totals.costPerKm = totals.distanceKm > 0 ? round2(totals.totalCost / totals.distanceKm) : 0;
+  totals.unallocatedAmount = round2(unallocated.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0));
 
   /* Per-vehicle summary, including vehicles that only have expenses. */
   const vehicleRows = db
-    .prepare('SELECT id, reg_no, model FROM fleet_vehicles WHERE deleted_at IS NULL ORDER BY reg_no COLLATE NOCASE')
+    .prepare(`SELECT id, reg_no, model FROM fleet_vehicles WHERE deleted_at IS NULL AND ${vehicleScope} ORDER BY reg_no COLLATE NOCASE`)
     .all();
   const vehicles = vehicleRows.map((vehicle) => {
     const targets = byVehicle.get(vehicle.id) || [];
@@ -515,7 +624,7 @@ function tripCostReport(db) {
     };
   });
 
-  return { rows, totals, unallocated, vehicles, categories: EXPENSE_CATEGORIES };
+  return { rows, totals, unallocated, pendingTrips, vehicles, categories: EXPENSE_CATEGORIES };
 }
 
 module.exports = function registerFleetRoutes(router) {
@@ -533,8 +642,11 @@ module.exports = function registerFleetRoutes(router) {
         .prepare('SELECT id, name, active FROM departments ORDER BY name COLLATE NOCASE')
         .all()
         .map((d) => ({ ...d, active: !!d.active })),
-      areas: masterRows(ctx.db, 'areas'),
-      vehicles: masterRows(ctx.db, 'vehicles'),
+      units: callerUnits(ctx.db, ctx),
+      defaultUnitId: callerUnitIds(ctx)[0] ?? null,
+      mapPoints: masterRows(ctx.db, 'mapPoints', ctx.unitIds),
+      areas: masterRows(ctx.db, 'areas', ctx.unitIds),
+      vehicles: masterRows(ctx.db, 'vehicles', ctx.unitIds),
       drivers: driverRows(ctx.db, ctx.unitIds),
       addresses: ctx.db
         .prepare('SELECT id, label, city, lat, lng, maps_url FROM common_addresses WHERE deleted_at IS NULL AND active = 1 ORDER BY label COLLATE NOCASE')
@@ -558,9 +670,15 @@ module.exports = function registerFleetRoutes(router) {
   router.get('/api/fleet/bookings', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
     const admin = auth.can(ctx.user, 'fleet.booking.manage');
+    const scope = visibleUnitClause('unit_id', ctx.unitIds);
+    const driverId = admin ? null : driverEmployeeId(ctx.db, ctx.user);
     const rows = admin
-      ? ctx.db.prepare('SELECT * FROM fleet_trips ORDER BY start_at DESC, id DESC').all()
-      : ctx.db.prepare('SELECT * FROM fleet_trips WHERE requester_id = ? ORDER BY start_at DESC, id DESC').all(ctx.user.id);
+      ? ctx.db.prepare(`SELECT * FROM fleet_trips WHERE ${scope} ORDER BY start_at DESC, id DESC`).all()
+      : ctx.db.prepare(
+        `SELECT * FROM fleet_trips
+          WHERE ${scope} AND (requester_id = ? OR (? IS NOT NULL AND driver_id = ?))
+          ORDER BY start_at DESC, id DESC`
+      ).all(ctx.user.id, driverId, driverId);
     return { bookings: rows.map((row) => bookingOut(ctx.db, row)) };
   });
 
@@ -570,8 +688,12 @@ module.exports = function registerFleetRoutes(router) {
       ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(Number(ctx.params.id)),
       'Booking not found.'
     );
-    if (!auth.can(ctx.user, 'fleet.booking.manage') && row.requester_id !== ctx.user.id) {
-      throw new HttpError(403, 'You do not have permission to view this booking.');
+    assertUnitVisible(ctx, row.unit_id);
+    if (!auth.can(ctx.user, 'fleet.booking.manage')) {
+      const driverId = driverEmployeeId(ctx.db, ctx.user);
+      if (row.requester_id !== ctx.user.id && !(driverId && row.driver_id === driverId)) {
+        throw new HttpError(403, 'You do not have permission to view this booking.');
+      }
     }
     return { booking: bookingOut(ctx.db, row) };
   });
@@ -589,14 +711,15 @@ module.exports = function registerFleetRoutes(router) {
     }
     if (start.getTime() >= end.getTime()) throw badRequest('End date/time must be after the start.');
 
-    /* Legacy clients may still post pickupId/dropId. New bookings normally
-       post the map point chosen in the Google Maps picker. */
+    /* Pickup/drop may be typed, picked on the keyless map, or chosen from a
+       saved Fleet map point (pickupId/dropId). */
     const pickupId = b.pickupId === undefined || b.pickupId === null || b.pickupId === ''
       ? null : integer(b.pickupId, 'Pickup location', { min: 1, max: 100000000 });
     const dropId = b.dropId === undefined || b.dropId === null || b.dropId === ''
       ? null : integer(b.dropId, 'Drop location', { min: 1, max: 100000000 });
-    const pickup = pickupId ? locationFromArea(ctx.db, pickupId, 'pickup') : locationFromBody(b, 'pickup');
-    const drop = dropId ? locationFromArea(ctx.db, dropId, 'drop') : locationFromBody(b, 'drop');
+    const unitId = selectedUnitId(ctx, b.unitId);
+    const pickup = pickupId ? locationFromArea(ctx.db, pickupId, 'pickup', ctx.unitIds) : locationFromBody(b, 'pickup');
+    const drop = dropId ? locationFromArea(ctx.db, dropId, 'drop', ctx.unitIds) : locationFromBody(b, 'drop');
     if (pickupId && dropId && pickupId === dropId) {
       throw badRequest('Pickup and drop locations must be different.');
     }
@@ -623,21 +746,21 @@ module.exports = function registerFleetRoutes(router) {
     const result = ctx.db
       .prepare(
         `INSERT INTO fleet_trips(
-           booking_no, requester_id, department_id, pickup_id, drop_id,
+           booking_no, requester_id, department_id, unit_id, pickup_id, drop_id,
            pickup_name, pickup_address, pickup_lat, pickup_lng, pickup_maps_url,
            drop_name, drop_address, drop_lat, drop_lng, drop_maps_url,
            start_at, end_at, passengers, purpose, status, created_at, updated_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?)`
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?)`
       )
       .run(
-        bookingNo, ctx.user.id, departmentId, pickupId, dropId,
+        bookingNo, ctx.user.id, departmentId, unitId, pickupId, dropId,
         pickup.name, pickup.address, pickup.lat, pickup.lng, pickup.mapsUrl,
         drop.name, drop.address, drop.lat, drop.lng, drop.mapsUrl,
         start.toISOString(), end.toISOString(), passengers, purpose, now, now
       );
     const id = Number(result.lastInsertRowid);
     audit(ctx, 'CREATE', 'fleet_booking', id, null, {
-      bookingNo, purpose, passengers, pickup: pickup.name, drop: drop.name,
+      bookingNo, purpose, passengers, unitId, pickup: pickup.name, drop: drop.name,
     });
     return { id, bookingNo, status: 'PENDING' };
   });
@@ -648,6 +771,7 @@ module.exports = function registerFleetRoutes(router) {
       ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(Number(ctx.params.id)),
       'Booking not found.'
     );
+    assertUnitVisible(ctx, booking.unit_id);
     return { availability: freeResources(ctx.db, booking, ctx.unitIds) };
   });
 
@@ -662,6 +786,7 @@ module.exports = function registerFleetRoutes(router) {
         ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id),
         'Booking not found.'
       );
+      assertUnitVisible(ctx, booking.unit_id);
       const now = nowIso();
       if (action === 'assign') {
         if (booking.status !== 'PENDING') throw badRequest('Only pending requests can be assigned.');
@@ -670,7 +795,7 @@ module.exports = function registerFleetRoutes(router) {
         const vehicle = ctx.db
           .prepare('SELECT * FROM fleet_vehicles WHERE id = ? AND deleted_at IS NULL AND active = 1 AND status = ?')
           .get(vehicleId, 'ACTIVE');
-        if (!vehicle) throw badRequest('Choose an active vehicle.');
+        if (!vehicle || !unitVisible(ctx.unitIds, vehicle.unit_id)) throw badRequest('Choose an active vehicle.');
         if ((Number(vehicle.seats) || 0) < booking.passengers) {
           throw badRequest('The selected vehicle does not have enough seats.');
         }
@@ -734,18 +859,20 @@ module.exports = function registerFleetRoutes(router) {
   router.get('/api/fleet/expenses', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
     const rows = ctx.db
-      .prepare('SELECT * FROM fleet_vehicle_expenses WHERE deleted_at IS NULL ORDER BY expense_date DESC, id DESC')
+      .prepare(`SELECT * FROM fleet_vehicle_expenses
+                 WHERE deleted_at IS NULL AND ${visibleUnitClause('unit_id', ctx.unitIds)}
+                 ORDER BY expense_date DESC, id DESC`)
       .all();
     return {
       expenses: rows.map((row) => expenseOut(ctx.db, row)),
       categories: EXPENSE_CATEGORIES,
-      vehicles: masterRows(ctx.db, 'vehicles'),
+      vehicles: masterRows(ctx.db, 'vehicles', ctx.unitIds),
     };
   });
 
   router.post('/api/fleet/expenses', async (ctx) => {
     auth.guard(ctx.user, 'fleet.booking.manage');
-    const values = expenseValues(ctx.db, ctx.body);
+    const values = expenseValues(ctx.db, ctx.body, ctx.unitIds);
     const now = nowIso();
     const columns = [...Object.keys(values), 'created_by', 'created_at', 'updated_at'];
     const result = ctx.db
@@ -766,7 +893,8 @@ module.exports = function registerFleetRoutes(router) {
       ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ? AND deleted_at IS NULL').get(id),
       'Expense not found.'
     );
-    const values = expenseValues(ctx.db, ctx.body);
+    assertUnitVisible(ctx, existing.unit_id);
+    const values = expenseValues(ctx.db, ctx.body, ctx.unitIds);
     const keys = Object.keys(values);
     ctx.db
       .prepare(
@@ -785,6 +913,7 @@ module.exports = function registerFleetRoutes(router) {
       ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ? AND deleted_at IS NULL').get(id),
       'Expense not found.'
     );
+    assertUnitVisible(ctx, existing.unit_id);
     const now = nowIso();
     ctx.db
       .prepare('UPDATE fleet_vehicle_expenses SET deleted_at = ?, deleted_by = ? WHERE id = ?')
@@ -795,7 +924,7 @@ module.exports = function registerFleetRoutes(router) {
 
   router.get('/api/fleet/trip-costs', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
-    return tripCostReport(ctx.db);
+    return tripCostReport(ctx.db, ctx.unitIds);
   });
 
   /* ------------------------------ Masters ---------------------------- */
@@ -803,7 +932,7 @@ module.exports = function registerFleetRoutes(router) {
     auth.guard(ctx.user, 'fleet.view');
     const model = ctx.params.model;
     if (!MASTERS[model]) throw new HttpError(404, 'Unknown fleet master.');
-    return { model, records: masterRows(ctx.db, model) };
+    return { model, records: masterRows(ctx.db, model, ctx.unitIds) };
   });
 
   router.post('/api/fleet/masters/:model', async (ctx) => {
@@ -827,7 +956,7 @@ module.exports = function registerFleetRoutes(router) {
       values.seats = integer(values.seats, 'Seats', { min: 1, max: 100, required: true });
       values.status = ['ACTIVE', 'IN_SERVICE'].includes(text(values.status || 'ACTIVE')) ? text(values.status || 'ACTIVE') : 'ACTIVE';
     }
-    if (model === 'areas') {
+    if (model === 'areas' || model === 'mapPoints') {
       for (const key of ['lat', 'lng']) {
         const raw = values[key];
         if (raw === '' || raw === undefined || raw === null) {
@@ -840,6 +969,9 @@ module.exports = function registerFleetRoutes(router) {
       }
     }
     normalizeLinks(values);
+    if (config.fields.includes('unit_id')) {
+      values.unit_id = selectedUnitId(ctx, values.unit_id === undefined ? undefined : values.unit_id);
+    }
     values.active = values.active === undefined || values.active === null || values.active === '' ? 1 : (Number(values.active) ? 1 : 0);
     for (const key of Object.keys(values)) {
       if (!COLUMN_MAP[key] || !config.fields.includes(key)) delete values[key];
@@ -867,7 +999,7 @@ module.exports = function registerFleetRoutes(router) {
     const model = ctx.params.model;
     const config = MASTERS[model];
     if (!config) throw new HttpError(404, 'Unknown fleet master.');
-    const existing = masterById(ctx.db, model, ctx.params.id);
+    const existing = masterById(ctx.db, model, ctx.params.id, ctx.unitIds);
     const b = normalizeMasterBody(ctx.body);
     const values = {};
     for (const field of config.fields) {
@@ -876,7 +1008,7 @@ module.exports = function registerFleetRoutes(router) {
     if (model === 'vehicles' && values.seats !== undefined) {
       values.seats = integer(values.seats, 'Seats', { min: 1, max: 100, required: true });
     }
-    if (model === 'areas') {
+    if (model === 'areas' || model === 'mapPoints') {
       for (const key of ['lat', 'lng']) {
         if (values[key] !== undefined) {
           if (values[key] === '' || values[key] === null) values[key] = null;
@@ -889,6 +1021,9 @@ module.exports = function registerFleetRoutes(router) {
       }
     }
     normalizeLinks(values);
+    if (config.fields.includes('unit_id') && values.unit_id !== undefined) {
+      values.unit_id = selectedUnitId(ctx, values.unit_id);
+    }
     if (values.active !== undefined) values.active = Number(values.active) ? 1 : 0;
     for (const key of Object.keys(values)) {
       if (!COLUMN_MAP[key] || !config.fields.includes(key)) delete values[key];
@@ -915,7 +1050,7 @@ module.exports = function registerFleetRoutes(router) {
     const model = ctx.params.model;
     const config = MASTERS[model];
     if (!config) throw new HttpError(404, 'Unknown fleet master.');
-    const existing = masterById(ctx.db, model, ctx.params.id);
+    const existing = masterById(ctx.db, model, ctx.params.id, ctx.unitIds);
     const now = nowIso();
     ctx.db
       .prepare(`UPDATE ${config.table} SET deleted_at = ?, deleted_by = ?, active = 0 WHERE id = ?`)

@@ -21,6 +21,7 @@ import * as assetClassesPage from './pages/asset-classes.js';
 import * as alertsPage from './pages/alerts.js';
 import * as fleetPage from './pages/fleet.js';
 import * as fleetOpsPage from './pages/fleet-ops.js';
+import * as fleetReportsPage from './pages/fleet-reports.js';
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -117,6 +118,7 @@ const NAV = [
     items: [
       { path: '/fleet', label: 'Vehicle Bookings', icon: 'car', permission: 'fleet.view' },
       { path: '/fleet/operations', label: 'Fleet Operations', icon: 'chart', permission: 'fleet.view' },
+      { path: '/fleet/reports', label: 'Fleet Reports', icon: 'file', permission: 'fleet.view' },
       { path: '/fleet/masters', label: 'Fleet Masters', icon: 'gear', permission: 'fleet.view' },
     ],
   },
@@ -152,6 +154,7 @@ const TITLES = {
 '/alerts': 'Alerts',
   '/fleet': 'Vehicle Bookings',
   '/fleet/operations': 'Fleet Operations',
+  '/fleet/reports': 'Fleet Reports',
   '/fleet/masters': 'Fleet Masters',
   '/stocks': 'Stock Register',
   '/org': 'Organization',
@@ -586,13 +589,16 @@ function updateBadges() {
 }
 
 function setActiveNav(path) {
-  const base = '/' + (path.split('/')[1] || '');
-  document.querySelectorAll('.nav a').forEach((a) => {
+  const links = [...document.querySelectorAll('.nav a')];
+  const matches = links.filter((a) => {
     const target = a.dataset.nav;
-    const match = target === '/' ? path === '/' : path === target || path.startsWith(target + '/');
-    a.classList.toggle('active', match);
-    void base;
+    return target === '/' ? path === '/' : path === target || path.startsWith(target + '/');
   });
+  /* Nested Fleet pages also match /fleet; highlight only the longest match. */
+  const longest = matches.reduce((best, link) => (
+    !best || (link.dataset.nav || '').length > (best.dataset.nav || '').length ? link : best
+  ), null);
+  links.forEach((a) => a.classList.toggle('active', a === longest));
 }
 
 /* ------------------------------------------------------------------ */
@@ -620,10 +626,12 @@ async function render() {
   if (!shellReady) renderShell();
 
   const view = document.getElementById('view');
-  const title = TITLES[`/${route.parts[0] || ''}`] || (route.parts[0] === 'bills' ? 'Bills' : 'New Life Assembly of God Community');
+  const exactTitle = TITLES[route.path];
+  const title = exactTitle || TITLES[`/${route.parts[0] || ''}`] || (route.parts[0] === 'bills' ? 'Bills' : 'New Life Assembly of God Community');
   const crumbs = document.getElementById('crumbs');
   if (crumbs) {
-    const extra = route.parts.length > 1 ? ` <span>/</span> <b>${esc(route.parts[1] === 'new' ? 'New' : route.parts[1])}</b>` : '';
+    const extra = !exactTitle && route.parts.length > 1
+      ? ` <span>/</span> <b>${esc(route.parts[1] === 'new' ? 'New' : route.parts[1])}</b>` : '';
     crumbs.innerHTML = `<b>${esc(title)}</b>${extra}`;
   }
   setActiveNav(route.path);
@@ -718,8 +726,12 @@ async function routePage(route, ctx) {
   if (p[0] === 'fleet') {
     if (!guard('fleet.view')) return;
     if (p[1] === 'operations') return fleetOpsPage.renderOperations(ctx);
+    if (p[1] === 'reports') return fleetReportsPage.renderReports(ctx);
     if (p[1] === 'masters') return fleetPage.renderMasters(ctx);
-    if (p[1] === 'bookings' && p[2] === 'new') return fleetPage.renderBookingForm(ctx);
+    if (p[1] === 'bookings' && p[2] === 'new') {
+      if (!guard('fleet.booking.create')) return;
+      return fleetPage.renderBookingForm(ctx);
+    }
     if (p[1] === 'bookings' && p[2]) return fleetPage.renderBookingDetail(ctx, { id: p[2] });
     return fleetPage.renderBookings(ctx);
   }

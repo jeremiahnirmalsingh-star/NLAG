@@ -27,6 +27,7 @@ export async function renderOperations(ctx) {
   const rows = costs.rows || [];
   const totals = costs.totals || {};
   const unallocated = costs.unallocated || [];
+  const pendingTrips = costs.pendingTrips || [];
   const vehicleSummary = costs.vehicles || [];
 
   const tabs = [
@@ -124,15 +125,30 @@ export async function renderOperations(ctx) {
                 <td class="num">${money(row.costs.SERVICE)}</td>
                 <td class="num">${money(otherCost(row.costs))}</td>
                 <td class="num"><b>${money(row.totalCost)}</b></td>
-                <td class="num">${money(row.costPerKm)}</td>
+                <td class="num">${num(row.costPerKm)}</td>
                 ${canManage ? `<td class="actions"><button class="btn btn-sm btn-ghost" data-edit-km="${row.id}" title="Edit km readings">${icon('edit')}</button></td>` : ''}
               </tr>`).join('')}</tbody>
             </table></div>`
           : emptyState('No trip costs yet', 'Complete a trip and record its starting and closing km. Then add vehicle expenses to see the cost split.', '', 'car')}
       </div>
+      ${pendingTrips.length ? `
+        <div class="card" style="margin-bottom:12px">
+          <div class="card-head"><div><h3>Not yet apportioned — trips</h3><div class="sub">These trips have no usable km readings yet. Enter the readings to include them in the cost split.</div></div></div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Booking</th><th>Status</th><th>Vehicle</th><th>Trip</th><th>Readings</th>${canManage ? '<th></th>' : ''}</tr></thead>
+            <tbody>${pendingTrips.map((trip) => `<tr>
+              <td><a href="#/fleet/bookings/${trip.id}"><b>${esc(trip.bookingNo)}</b></a><div class="small muted">${esc(trip.departmentName || '—')}</div></td>
+              <td>${esc(trip.status)}</td>
+              <td>${esc(trip.vehicleRegNo || '—')}</td>
+              <td>${esc(trip.purpose || '—')}<div class="small muted">${esc(trip.driverName || '—')}</div></td>
+              <td>${trip.startKm == null || trip.endKm == null ? 'Incomplete' : `${num(trip.startKm)} → ${num(trip.endKm)} km`}</td>
+              ${canManage ? `<td class="actions"><button class="btn btn-sm btn-ghost" data-edit-pending-km="${trip.id}" title="Enter km readings">${icon('edit')}</button></td>` : ''}
+            </tr>`).join('')}</tbody>
+          </table></div>
+        </div>` : ''}
       ${unallocated.length ? `
         <div class="card">
-          <div class="card-head"><div><h3>Not yet apportioned</h3><div class="sub">No km readings are available for these vehicles yet</div></div></div>
+          <div class="card-head"><div><h3>Not yet apportioned — expenses</h3><div class="sub">No measured trips are available for these vehicles yet · ${money(totals.unallocatedAmount)}</div></div></div>
           <div class="table-wrap"><table class="table">
             <thead><tr><th>Date</th><th>Vehicle</th><th>Category</th><th class="num">Amount</th></tr></thead>
             <tbody>${unallocated.map((expense) => `<tr>
@@ -231,42 +247,51 @@ export async function renderOperations(ctx) {
   });
 
   /* ------------------------------- km -------------------------------- */
+  const openKmForm = (row) => {
+    modal({
+      title: 'Edit km readings',
+      subtitle: `${row.bookingNo} · ${row.vehicleRegNo}`,
+      body: `<form id="fleet-km-form"><div class="form-grid">
+        ${field({ label: 'Starting km', name: 'startKm', type: 'number', value: row.startKm ?? '', required: true, attrs: 'min="0" step="0.01"' })}
+        ${field({ label: 'Closing km', name: 'endKm', type: 'number', value: row.endKm ?? '', required: true, attrs: 'min="0" step="0.01"' })}
+      </div><div class="alert alert-danger hidden" data-err></div></form>`,
+      footer: `<button class="btn" data-modal-close>Cancel</button><button class="btn btn-primary" data-save>Save readings</button>`,
+      onMount(el, close) {
+        el.querySelector('[data-save]').addEventListener('click', async () => {
+          const err = el.querySelector('[data-err]');
+          err.classList.add('hidden');
+          const values = serializeForm(el.querySelector('#fleet-km-form'));
+          const start = Number(values.startKm);
+          const end = Number(values.endKm);
+          if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+            err.textContent = 'Closing km must be a number not less than starting km.';
+            err.classList.remove('hidden');
+            return;
+          }
+          try {
+            await api.patch(`/api/fleet/bookings/${row.id}`, { action: 'odometer', startKm: start, endKm: end });
+            close();
+            toast('Km readings saved. Costs recalculated.');
+            await refresh();
+          } catch (e) {
+            err.textContent = e.message;
+            err.classList.remove('hidden');
+          }
+        });
+      },
+    });
+  };
+
   ctx.view.querySelectorAll('[data-edit-km]').forEach((button) => {
     button.addEventListener('click', () => {
       const row = rows.find((r) => r.id === Number(button.dataset.editKm));
-      if (!row) return;
-      modal({
-        title: 'Edit km readings',
-        subtitle: `${row.bookingNo} · ${row.vehicleRegNo}`,
-        body: `<form id="fleet-km-form"><div class="form-grid">
-          ${field({ label: 'Starting km', name: 'startKm', type: 'number', value: row.startKm, required: true, attrs: 'min="0" step="0.01"' })}
-          ${field({ label: 'Closing km', name: 'endKm', type: 'number', value: row.endKm, required: true, attrs: 'min="0" step="0.01"' })}
-        </div><div class="alert alert-danger hidden" data-err></div></form>`,
-        footer: `<button class="btn" data-modal-close>Cancel</button><button class="btn btn-primary" data-save>Save readings</button>`,
-        onMount(el, close) {
-          el.querySelector('[data-save]').addEventListener('click', async () => {
-            const err = el.querySelector('[data-err]');
-            err.classList.add('hidden');
-            const values = serializeForm(el.querySelector('#fleet-km-form'));
-            const start = Number(values.startKm);
-            const end = Number(values.endKm);
-            if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
-              err.textContent = 'Closing km must be a number not less than starting km.';
-              err.classList.remove('hidden');
-              return;
-            }
-            try {
-              await api.patch(`/api/fleet/bookings/${row.id}`, { action: 'odometer', startKm: start, endKm: end });
-              close();
-              toast('Km readings saved. Costs recalculated.');
-              await refresh();
-            } catch (e) {
-              err.textContent = e.message;
-              err.classList.remove('hidden');
-            }
-          });
-        },
-      });
+      if (row) openKmForm(row);
+    });
+  });
+  ctx.view.querySelectorAll('[data-edit-pending-km]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const row = pendingTrips.find((r) => r.id === Number(button.dataset.editPendingKm));
+      if (row) openKmForm(row);
     });
   });
 }

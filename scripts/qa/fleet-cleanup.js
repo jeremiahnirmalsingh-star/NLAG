@@ -9,7 +9,6 @@ const path = require('node:path');
 const dbPath = process.env.ABMDAS_DB || 'C:/abmdas-data/abmdas.db';
 const db = new DatabaseSync(path.resolve(dbPath));
 db.prepare('DELETE FROM fleet_trips WHERE purpose LIKE ?').run('QA %');
-db.prepare('DELETE FROM fleet_bookings WHERE purpose LIKE ?').run('QA %');
 db.prepare('DELETE FROM fleet_areas WHERE name LIKE ?').run('QA %');
 db.prepare(
   `DELETE FROM fleet_vehicle_expenses WHERE vehicle_id IN

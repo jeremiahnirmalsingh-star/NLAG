@@ -20,7 +20,12 @@ const MASTER_MODELS = {
   vehicles: {
     label: 'Vehicles',
     singular: 'Vehicle',
-    columns: ['Registration', 'Model', 'Seats', 'Linked asset', 'Status'],
+    columns: ['Registration', 'Model', 'Seats', 'Unit', 'Linked asset', 'Status'],
+  },
+  mapPoints: {
+    label: 'Map Points',
+    singular: 'Map Point',
+    columns: ['Name', 'Address', 'Unit', 'Map link', 'Status'],
   },
 };
 
@@ -90,7 +95,18 @@ export async function renderBookings(ctx) {
 export async function renderBookingForm(ctx) {
   const meta = await api.get('/api/fleet/meta');
   const departments = meta.departments || [];
+  const mapPoints = meta.mapPoints || [];
   const picked = { pickup: null, drop: null };
+
+  const savedPointField = (kind, label) => `
+    ${field({
+      label, name: `${kind}PointId`, type: 'select', value: '',
+      options: [
+        { value: '', label: '— Type address / search map —' },
+        ...mapPoints.map((point) => ({ value: point.id, label: point.name })),
+      ],
+      hint: 'Optional. Saved points are maintained in Fleet Masters → Map Points.',
+    })}`;
 
   const addressField = (kind, label, placeholder) => `
     <div class="field span-2">
@@ -103,10 +119,11 @@ export async function renderBookingForm(ctx) {
         </div>
       </div>
       <input type="hidden" name="${kind}Name" value="" />
+      <input type="hidden" name="${kind}Id" value="" />
       <input type="hidden" name="${kind}Lat" value="" />
       <input type="hidden" name="${kind}Lng" value="" />
       <input type="hidden" name="${kind}MapsUrl" value="" />
-      <div class="hint">Type the address, or use <b>Search on map</b> to pick it from OpenStreetMap. Coordinates are optional.</div>
+      <div class="hint">Type the address, choose a saved map point, or use <b>Search on map</b> to pick it from OpenStreetMap. Coordinates are optional for typed addresses.</div>
     </div>`;
 
   ctx.view.innerHTML = `
@@ -119,6 +136,8 @@ export async function renderBookingForm(ctx) {
         <div class="form-grid">
           ${field({ label: 'Department', name: 'departmentId', type: 'select', options: [{ value: '', label: '— Optional —' }, ...departments.filter((d) => d.active).map((d) => ({ value: d.id, label: d.name }))] })}
           ${field({ label: 'Number of persons', name: 'passengers', type: 'number', value: 1, required: true, attrs: 'min="1" max="60"' })}
+          ${savedPointField('pickup', 'Saved pickup point')}
+          ${savedPointField('drop', 'Saved drop point')}
           ${addressField('pickup', 'Pickup address', 'e.g. NLAGC Main Gate, Bengaluru')}
           ${addressField('drop', 'Drop address', 'e.g. Kempegowda International Airport, Bengaluru')}
           ${field({ label: 'Trip start', name: 'startAt', type: 'datetime-local', value: defaultStart(), required: true })}
@@ -133,6 +152,30 @@ export async function renderBookingForm(ctx) {
   const form = ctx.view.querySelector('#fleet-booking-form');
   if (!form) return;
 
+  const fillFromPoint = (kind, point) => {
+    picked[kind] = {
+      name: point.name, address: point.address || point.name,
+      lat: point.lat, lng: point.lng, mapsUrl: point.mapsUrl || '',
+    };
+    form.querySelector(`[name="${kind}Address"]`).value = picked[kind].address;
+    form.querySelector(`[name="${kind}Name"]`).value = point.name;
+    form.querySelector(`[name="${kind}Id"]`).value = point.id;
+    form.querySelector(`[name="${kind}Lat"]`).value = point.lat == null ? '' : point.lat;
+    form.querySelector(`[name="${kind}Lng"]`).value = point.lng == null ? '' : point.lng;
+    form.querySelector(`[name="${kind}MapsUrl"]`).value = picked[kind].mapsUrl;
+  };
+
+  ['pickup', 'drop'].forEach((kind) => {
+    form.querySelector(`[name="${kind}PointId"]`)?.addEventListener('change', (event) => {
+      const point = mapPoints.find((item) => String(item.id) === String(event.target.value));
+      if (!point) {
+        form.querySelector(`[name="${kind}Id"]`).value = '';
+        return;
+      }
+      fillFromPoint(kind, point);
+    });
+  });
+
   form.querySelectorAll('[data-search-map]').forEach((button) => {
     button.addEventListener('click', async () => {
       const kind = button.dataset.searchMap;
@@ -142,8 +185,10 @@ export async function renderBookingForm(ctx) {
       });
       if (!value) return;
       picked[kind] = value;
+      form.querySelector(`[name="${kind}PointId"]`).value = '';
       form.querySelector(`[name="${kind}Address"]`).value = value.address;
       form.querySelector(`[name="${kind}Name"]`).value = value.name;
+      form.querySelector(`[name="${kind}Id"]`).value = '';
       form.querySelector(`[name="${kind}Lat"]`).value = value.lat;
       form.querySelector(`[name="${kind}Lng"]`).value = value.lng;
       form.querySelector(`[name="${kind}MapsUrl"]`).value = value.mapsUrl;
@@ -169,7 +214,8 @@ export async function renderBookingForm(ctx) {
       const kind = input.name.replace('Address', '');
       if (picked[kind] && input.value.trim() !== picked[kind].address) {
         picked[kind] = null;
-        ['Lat', 'Lng', 'MapsUrl'].forEach((suffix) => {
+        form.querySelector(`[name="${kind}PointId"]`).value = '';
+        ['Id', 'Name', 'Lat', 'Lng', 'MapsUrl'].forEach((suffix) => {
           form.querySelector(`[name="${kind}${suffix}"]`).value = '';
         });
       }
@@ -284,7 +330,7 @@ export async function renderBookingDetail(ctx, options = {}) {
           <div class="card-head"><div><h3>Assign vehicle & driver</h3><div class="sub">Only resources free for this time slot are listed</div></div></div>
           <div class="form-section">
             ${availability && !availability.vehicles.length || availability && !availability.drivers.length
-              ? '<div class="alert alert-danger">No free vehicle or driver is available for this time slot. Adjust the trip time or add a fleet master.</div>' : ''}
+              ? '<div class="alert alert-danger">No free vehicle or driver is available for this time slot. Adjust the trip time, add a vehicle in Fleet Masters, or mark an employee as a driver in their Employee record.</div>' : ''}
             <form id="fleet-assign-form" class="form-grid">
               ${field({
                 label: 'Vehicle', name: 'vehicleId', type: 'select', required: true,
@@ -376,7 +422,16 @@ function masterFields(model, record, meta = {}) {
     { value: 1, label: 'Active' },
     { value: 0, label: 'Inactive' },
   ];
-  if (model === 'areas') {
+  const unitField = () => field({
+    label: 'Unit', name: 'unitId', type: 'select',
+    value: record ? (v('unitId', '') ?? '') : (meta.defaultUnitId ?? ''),
+    options: [
+      { value: '', label: '— All units —' },
+      ...(meta.units || []).map((u) => ({ value: u.id, label: u.name })),
+    ],
+    hint: 'A point or vehicle assigned to one unit is hidden from other units. All units is shared.',
+  });
+  if (model === 'areas' || model === 'mapPoints') {
     return `
       ${field({ label: 'Name', name: 'name', value: v('name'), required: true })}
       ${field({
@@ -388,6 +443,7 @@ function masterFields(model, record, meta = {}) {
       ${field({ label: 'Latitude', name: 'lat', value: v('lat', ''), attrs: 'step="any"' })}
       ${field({ label: 'Longitude', name: 'lng', value: v('lng', ''), attrs: 'step="any"' })}
       ${field({ label: 'Google Maps link', name: 'mapsUrl', value: v('mapsUrl'), span: true, placeholder: 'https://maps.google.com/…' })}
+      ${unitField()}
       ${field({ label: 'Status', name: 'active', type: 'select', value: v('active', 1), options: activeOptions })}`;
   }
   if (model === 'vehicles') {
@@ -400,6 +456,7 @@ function masterFields(model, record, meta = {}) {
         options: [{ value: '', label: '— Not linked —' }, ...(meta.assets || []).map((a) => ({ value: a.id, label: `${a.code} · ${a.name}` }))],
         hint: 'Optional. Links this vehicle to the common fixed-asset register.',
       })}
+      ${unitField()}
       ${field({ label: 'Status', name: 'status', type: 'select', value: v('status', 'ACTIVE'), options: [{ value: 'ACTIVE', label: 'Active' }, { value: 'IN_SERVICE', label: 'In service' }] })}
       ${field({ label: 'Availability', name: 'active', type: 'select', value: v('active', 1), options: activeOptions })}`;
   }
@@ -414,13 +471,13 @@ function masterValues(model, form) {
     out[column] = value;
   }
   if (model === 'vehicles') out.seats = Number(out.seats) || 0;
-  if (model === 'areas') {
+  if (model === 'areas' || model === 'mapPoints') {
     for (const key of ['lat', 'lng']) {
       out[key] = out[key] === '' ? null : Number(out[key]);
       if (out[key] !== null && !Number.isFinite(out[key])) out[key] = null;
     }
   }
-  for (const key of ['address_id', 'asset_id']) {
+  for (const key of ['address_id', 'asset_id', 'unit_id']) {
     if (key in out) out[key] = out[key] === '' || out[key] == null ? null : Number(out[key]);
   }
   out.active = Number(out.active) ? 1 : 0;
@@ -428,14 +485,15 @@ function masterValues(model, form) {
 }
 
 function masterCell(model, record, meta = {}) {
-  if (model === 'areas') {
-    const linked = record.addressId
-      ? esc((meta.addresses || []).find((a) => String(a.id) === String(record.addressId))?.label || `#${record.addressId}`)
-      : '—';
+  const unit = (() => {
+    if (record.unitId == null) return 'All units';
+    return esc((meta.units || []).find((u) => String(u.id) === String(record.unitId))?.name || `#${record.unitId}`);
+  })();
+  if (model === 'areas' || model === 'mapPoints') {
     return [
       record.name,
       record.address || '—',
-      linked,
+      unit,
       record.mapsUrl ? `<a href="${esc(record.mapsUrl)}" target="_blank" rel="noopener noreferrer">${icon('external')}</a>` : '—',
       record.active ? 'Active' : 'Inactive',
     ];
@@ -444,7 +502,7 @@ function masterCell(model, record, meta = {}) {
     const asset = record.assetId
       ? esc((meta.assets || []).find((a) => String(a.id) === String(record.assetId))?.code || `#${record.assetId}`)
       : '—';
-    return [record.regNo, record.model, record.seats, asset, `${record.status}${record.active ? '' : ' · Inactive'}`];
+    return [record.regNo, record.model, record.seats, unit, asset, `${record.status}${record.active ? '' : ' · Inactive'}`];
   }
   return [];
 }
@@ -463,7 +521,7 @@ export async function renderMasters(ctx) {
 
   ctx.view.innerHTML = `
     <div class="page-head">
-      <div><h1>Fleet Masters</h1><div class="sub">Maintain vehicles. Pickup and drop addresses are searched on each booking with OpenStreetMap and can also be opened in Google Maps, so saved areas are not required.</div></div>
+      <div><h1>Fleet Masters</h1><div class="sub">Maintain vehicles and saved trip map points. Pickup and drop addresses can still be typed or searched on OpenStreetMap, so saved points are never mandatory.</div></div>
       <div class="page-actions"><a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a></div>
     </div>
     <div class="alert alert-info">Departments and drivers come from the shared <a href="#/employees">Employees</a> and <a href="#/org">Organization</a> masters. Mark an employee as a driver in their employee record.</div>
@@ -492,6 +550,8 @@ export async function renderMasters(ctx) {
       title: `${record ? 'Edit' : 'Add'} ${config.singular}`,
       size: 'wide',
       body: `<form id="fleet-master-form"><div class="form-grid">${masterFields(model, record, meta)}</div>
+        ${model === 'mapPoints' || model === 'areas'
+          ? '<div class="form-actions"><button type="button" class="btn btn-sm" data-pick-point>Search on map</button></div>' : ''}
         <div class="alert alert-danger hidden" data-err></div></form>`,
       footer: `<button class="btn" data-modal-close>Cancel</button><button class="btn btn-primary" data-save>Save</button>`,
       onMount(el, close) {
@@ -504,6 +564,24 @@ export async function renderMasters(ctx) {
           form.querySelector('[name="lat"]').value = address.lat == null ? '' : address.lat;
           form.querySelector('[name="lng"]').value = address.lng == null ? '' : address.lng;
           form.querySelector('[name="mapsUrl"]').value = address.mapsUrl || '';
+        });
+        el.querySelector('[data-pick-point]')?.addEventListener('click', async () => {
+          const value = await chooseMapLocation({
+            title: 'Search map point',
+            initial: {
+              name: form.querySelector('[name="name"]').value,
+              address: form.querySelector('[name="address"]').value,
+              lat: form.querySelector('[name="lat"]').value,
+              lng: form.querySelector('[name="lng"]').value,
+              mapsUrl: form.querySelector('[name="mapsUrl"]').value,
+            },
+          });
+          if (!value) return;
+          form.querySelector('[name="address"]').value = value.address;
+          form.querySelector('[name="lat"]').value = value.lat == null ? '' : value.lat;
+          form.querySelector('[name="lng"]').value = value.lng == null ? '' : value.lng;
+          form.querySelector('[name="mapsUrl"]').value = value.mapsUrl || '';
+          if (!form.querySelector('[name="name"]').value) form.querySelector('[name="name"]').value = value.name;
         });
         el.querySelector('[data-save]').addEventListener('click', async () => {
           const err = el.querySelector('[data-err]');

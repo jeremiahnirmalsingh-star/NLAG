@@ -143,9 +143,22 @@ function ensureFleetSchema(db) {
     if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   };
   addColumn('fleet_areas', 'address_id', 'INTEGER REFERENCES common_addresses(id)');
+  addColumn('fleet_areas', 'unit_id', 'INTEGER REFERENCES units(id)');
   addColumn('fleet_vehicles', 'asset_id', 'INTEGER REFERENCES assets(id)');
+  addColumn('fleet_vehicles', 'unit_id', 'INTEGER REFERENCES units(id)');
   addColumn('fleet_trips', 'start_km', 'REAL');
   addColumn('fleet_trips', 'end_km', 'REAL');
+  addColumn('fleet_trips', 'unit_id', 'INTEGER REFERENCES units(id)');
+  addColumn('fleet_vehicle_expenses', 'unit_id', 'INTEGER REFERENCES units(id)');
+
+  /* A NULL unit_id means "shared by all units", so older Fleet records stay
+     visible while newly created records follow the caller's unit membership. */
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_fleet_areas_unit ON fleet_areas(unit_id);
+    CREATE INDEX IF NOT EXISTS idx_fleet_vehicles_unit ON fleet_vehicles(unit_id);
+    CREATE INDEX IF NOT EXISTS idx_fleet_trips_unit ON fleet_trips(unit_id);
+    CREATE INDEX IF NOT EXISTS idx_fleet_expenses_unit ON fleet_vehicle_expenses(unit_id);
+  `);
 
   /* Audited marker for the shared-master design. INSERT OR IGNORE keeps restarts
      repeat-safe and never overwrites an administrator's settings. */

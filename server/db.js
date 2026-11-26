@@ -891,6 +891,12 @@ const ROLE_DEFS = [
       'asset.view',
     ],
   },
+  {
+    code: 'driver',
+    name: 'Driver',
+    description: 'Fleet driver with read-only access to assigned trips and reports',
+    permissions: ['dashboard.view', 'fleet.view'],
+  },
 ];
 
 const upsertPermission = db.prepare(
@@ -935,6 +941,7 @@ const FLEET_GRANTS = {
   asset_custodian: FLEET_STAFF,
   senior_management: FLEET_VIEW,
   auditor: FLEET_VIEW,
+  driver: FLEET_VIEW,
 };
 for (const [code, permissions] of Object.entries(FLEET_GRANTS)) {
   const role = findRole.get(code);
