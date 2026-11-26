@@ -2,7 +2,7 @@ import { api, queryString } from '../api.js';
 import { navigate, withQuery } from '../router.js';
 import {
   esc, icon, toast, field, modal, confirmDialog, actionDialog,
-  serializeForm, emptyState, statusBadge, fmtDate, todayInput,
+  serializeForm, emptyState, statusBadge, fmtDate, todayInput, readFileAsBase64,
 } from '../ui.js';
 
 const STATUS_LABELS = {
@@ -91,6 +91,8 @@ export async function renderAttendance(ctx) {
       <td>${esc(row.checkOut)}</td>
       <td class="num"><b>${hoursText(row.hours)}</b></td>
       <td class="num">${row.extraHours > 0 ? `<span class="badge forwarded">+${hoursText(row.extraHours)}</span>` : '—'}</td>
+      <td>${esc((meta.shiftStatuses || []).find((item) => item.value === row.shiftStatus)?.label || row.shiftStatus || '—')}</td>
+      <td>${row.gpsLat != null && row.gpsLng != null ? `<a href="https://www.google.com/maps/search/?api=1&query=${row.gpsLat},${row.gpsLng}" target="_blank" rel="noopener noreferrer">${icon('car')} GPS</a>` : '—'}${row.selfieUrl ? ` <a href="${esc(row.selfieUrl)}" target="_blank" rel="noopener noreferrer">Selfie</a>` : ''}</td>
       <td>${statusBadge(row.status, STATUS_LABELS[row.status] || row.status)}</td>
       <td class="small muted">${esc(row.remarks || '—')}</td>
       ${actions.length ? `<td class="actions">${actions.join('')}</td>` : ''}
@@ -125,7 +127,8 @@ export async function renderAttendance(ctx) {
         ? `<div class="table-wrap"><table class="table">
             <thead><tr>
               <th>Date</th>${canManage ? '<th>Driver</th>' : ''}<th>Check in</th><th>Check out</th>
-              <th class="num">Worked</th><th class="num">Extra</th><th>Status</th><th>Remarks</th>
+              <th class="num">Worked</th><th class="num">Extra</th><th>Shift</th><th>Location</th>
+              <th>Status</th><th>Remarks</th>
               ${actionsInRows(rows) ? '<th></th>' : ''}
             </tr></thead><tbody>${rows}</tbody>
           </table></div>`
@@ -165,6 +168,18 @@ export async function renderAttendance(ctx) {
         options: units.map((u) => ({ value: u.id, label: u.name })),
       })
       : '';
+    const shiftField = field({
+      label: 'Shift status', name: 'shiftStatus', type: 'select',
+      value: record?.shiftStatus || 'ON_DUTY',
+      options: meta.shiftStatuses || [{ value: 'ON_DUTY', label: 'On duty' }],
+    });
+    const gpsHtml = `
+      ${field({ label: 'Latitude', name: 'gpsLat', type: 'number', attrs: 'step="any"', value: record?.gpsLat ?? '', placeholder: 'Optional' })}
+      ${field({ label: 'Longitude', name: 'gpsLng', type: 'number', attrs: 'step="any"', value: record?.gpsLng ?? '', placeholder: 'Optional' })}
+      <div class="field span-2">
+        <button type="button" class="btn btn-sm" data-current-gps>${icon('car')} Use current location</button>
+        <div class="hint">GPS is optional. Latitude and longitude must be supplied together.</div>
+      </div>`;
 
     modal({
       title: editing ? 'Edit attendance' : 'Add driver attendance',
@@ -174,7 +189,15 @@ export async function renderAttendance(ctx) {
         ${field({ label: 'Date', name: 'date', type: 'date', value: record?.date || todayInput(), required: !editing, attrs: editing ? 'disabled' : '' })}
         ${field({ label: 'Check in', name: 'checkIn', type: 'time', value: record?.checkIn || '', required: true })}
         ${field({ label: 'Check out', name: 'checkOut', type: 'time', value: record?.checkOut || '', required: true })}
+        ${shiftField}
         ${unitField}
+        ${gpsHtml}
+        <div class="field span-2">
+          <label>Driver selfie <span class="muted">(optional)</span></label>
+          <input class="input" type="file" accept="image/jpeg,image/png,image/webp" name="selfieFile" />
+          <input type="hidden" name="selfieUrl" value="${esc(record?.selfieUrl || '')}" />
+          <div class="hint">JPEG, PNG or WebP, up to 5 MB. Leave blank to keep the current selfie.</div>
+        </div>
         ${field({ label: 'Remarks', name: 'remarks', type: 'textarea', span: true, value: record?.remarks || '', placeholder: 'Optional details' })}
       </div>
       <div class="alert alert-info" data-preview>Enter check-in and check-out times to see calculated hours.</div>
@@ -195,16 +218,48 @@ export async function renderAttendance(ctx) {
         checkOut.addEventListener('input', updatePreview);
         updatePreview();
 
+        el.querySelector('[data-current-gps]')?.addEventListener('click', () => {
+          if (!navigator.geolocation) {
+            toast('This browser does not support location access.', 'error');
+            return;
+          }
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              el.querySelector('[name="gpsLat"]').value = Number(position.coords.latitude).toFixed(6);
+              el.querySelector('[name="gpsLng"]').value = Number(position.coords.longitude).toFixed(6);
+              toast('Current location captured.');
+            },
+            (error) => toast(error.message || 'Could not capture your location.', 'error'),
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+          );
+        });
+
         el.querySelector('[data-save]').addEventListener('click', async () => {
           err.classList.add('hidden');
           const values = serializeForm(el.querySelector('#fleet-attendance-form'));
           try {
+            const file = el.querySelector('[name="selfieFile"]')?.files?.[0];
+            if (file) {
+              const image = await readFileAsBase64(file);
+              if (image.size > 5 * 1024 * 1024) throw new Error('Selfie must be 5 MB or smaller.');
+              const uploaded = await api.post('/api/fleet/photos', {
+                fileName: image.name,
+                mimeType: image.mime,
+                data: image.data,
+                category: 'SELFIE',
+              });
+              values.selfieUrl = uploaded.url;
+            }
             if (editing) {
               await api.patch(`/api/fleet/attendance/${record.id}`, {
                 action: 'edit',
                 checkIn: values.checkIn,
                 checkOut: values.checkOut,
                 remarks: values.remarks,
+                shiftStatus: values.shiftStatus,
+                gpsLat: values.gpsLat,
+                gpsLng: values.gpsLng,
+                selfieUrl: values.selfieUrl,
               });
             } else {
               await api.post('/api/fleet/attendance', values);

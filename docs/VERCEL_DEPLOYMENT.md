@@ -77,7 +77,9 @@ $env:PORT = "3000"
 
 ### Driver attendance
 
-Driver attendance uses a **9-hour standard duty day**. `server/routes/fleet.js` exports that value as `standardHours` to the dashboard and attendance APIs. Extra hours are `max(0, worked hours - 9)`, stored per day in `fleet_driver_attendance.extra_hours`.
+Driver attendance uses a **9-hour standard duty day**. `server/routes/fleet.js` exports that value as `standardHours` to the dashboard and attendance APIs. Extra hours are `max(0, worked hours - 9)`, stored per day in `fleet_driver_attendance.extra_hours`. Manager entries are `APPROVED`; driver self-entries stay `PENDING` until Transport approves.
+
+Fleet trip operations add a mandatory six-item start checklist, during-trip updates with prayer-pickup counts, driver closure to `PENDING_VERIFICATION`, Transport verification/return, vehicle issues, accidents and CSV reports. Selfies upload as base64 JSON through `/api/fleet/photos`; no multipart parser or Google API key is used. Restart the backend after changing `server/routes/fleet.js` or `server/fleet/schema.js`, then confirm `/api/health` before testing the Vercel URL.
 
 ### Tailscale Funnel
 
@@ -142,7 +144,7 @@ These checks were run against the live deployment:
 - [x] Login with `admin` / `Admin@123` through the Vercel UI
 - [x] Login response returns `sessionTimeoutMs: 1800000` (30 minutes)
 - [x] `Set-Cookie` is `HttpOnly; SameSite=Lax; Secure`
-- [x] `https://abmdas.vercel.app/sw.js` contains `abmdas-shell-v64`
+- [x] `https://abmdas.vercel.app/sw.js` contains `abmdas-shell-v65`
 - [x] Served `css/app.css` matches the repository copy after newline normalization
 - [x] PO `PO/NLAGC/MUSIC/26-27/0058` opens with total `₹25,532.00`, taxable `₹21,637.29`, SGST/CGST `₹1,947.36` each, and round off `0`
 - [x] PO print has no QR, uses the `Discount` label, keeps the large signature band, and retains the A4 print rules
@@ -161,4 +163,4 @@ These checks were run against the live deployment:
 | Health works on Tailscale URL but not Vercel URL | `vercel.json` rewrite points at the wrong host | Confirm destination is `https://nlcc-projects.taild9d340.ts.net/api/:path*`, then push/redeploy |
 | Data resets | `ABMDAS_DATA_DIR` not set to `C:\abmdas-data` | Restore the env var in the supervisor and restart |
 | Blank page or static 404 | Vercel Output Directory not `public` | Set Output Directory to `public` and redeploy |
-| Stale UI after a release | Service worker cache | Keep cache name `abmdas-shell-v64`; hard-refresh once if needed |
+| Stale UI after a release | Service worker cache | Keep cache name `abmdas-shell-v65`; hard-refresh once if needed |

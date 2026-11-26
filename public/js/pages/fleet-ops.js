@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { withQuery } from '../router.js';
 import {
   esc, icon, toast, field, modal, confirmDialog, serializeForm, emptyState,
+  statusBadge, fmtDate,
 } from '../ui.js';
 
 const money = (value) => `₹${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
@@ -14,10 +15,11 @@ const otherCost = (costs) => ['REPAIR', 'TYRE', 'TAX', 'OTHER']
 export async function renderOperations(ctx) {
   ctx.view.innerHTML = '<div class="empty">Loading fleet operations…</div>';
   const tab = ctx.route.query.tab || 'trips';
-  const [meta, costs, expensesRes] = await Promise.all([
+  const [meta, costs, expensesRes, bookingsRes] = await Promise.all([
     api.get('/api/fleet/meta'),
     api.get('/api/fleet/trip-costs'),
     api.get('/api/fleet/expenses'),
+    api.get('/api/fleet/bookings'),
   ]);
 
   const canManage = !!meta.permissions?.manageBookings;
@@ -29,8 +31,10 @@ export async function renderOperations(ctx) {
   const unallocated = costs.unallocated || [];
   const pendingTrips = costs.pendingTrips || [];
   const vehicleSummary = costs.vehicles || [];
+  const liveTrips = (bookingsRes.bookings || []).filter((trip) => ['STARTED', 'PENDING_VERIFICATION'].includes(trip.status));
 
   const tabs = [
+    ['live', 'Live trips'],
     ['trips', 'Trips & cost'],
     ['expenses', 'Expenses'],
     ['summary', 'Vehicle summary'],
@@ -40,7 +44,27 @@ export async function renderOperations(ctx) {
 
   let content = '';
 
-  if (tab === 'expenses') {
+  if (tab === 'live') {
+    content = `
+      <div class="alert alert-info">In-progress trips and driver closures awaiting Transport verification. Open a booking to see its checklist, timeline, prayer-pickup counts and closure details.</div>
+      <div class="card">
+        <div class="card-head"><div><h3>Live trips</h3><div class="sub">${liveTrips.length} trip${liveTrips.length === 1 ? '' : 's'}</div></div></div>
+        ${liveTrips.length
+          ? `<div class="table-wrap"><table class="table">
+              <thead><tr><th>Booking</th><th>Status</th><th>Requester</th><th>Route</th><th>Vehicle / driver</th><th>Prayer pickups</th><th>Reading</th></tr></thead>
+              <tbody>${liveTrips.map((trip) => `<tr>
+                <td><a href="#/fleet/bookings/${trip.id}"><b>${esc(trip.bookingNo)}</b></a><div class="small muted">${esc(fmtDate(trip.startAt, true))}</div></td>
+                <td>${statusBadge(trip.status, trip.status === 'STARTED' ? 'In progress' : 'Awaiting verification')}</td>
+                <td>${esc(trip.requesterName || '—')}<div class="small muted">${esc(trip.departmentName || '—')}</div></td>
+                <td>${esc(trip.pickupName || trip.pickupAddress || '—')} → ${esc(trip.dropName || trip.dropAddress || '—')}</td>
+                <td>${esc(trip.vehicleRegNo || '—')}<div class="small muted">${esc(trip.driverName || '—')}</div></td>
+                <td class="num">${num(trip.prayerPickupCount || 0)}</td>
+                <td>${trip.startKm == null ? '—' : num(trip.startKm)} → ${trip.endKm == null ? '—' : num(trip.endKm)} km</td>
+              </tr>`).join('')}</tbody>
+            </table></div>`
+          : emptyState('No live trips', 'Trips will appear here once an allotted driver starts them.', '', 'car')}
+      </div>`;
+  } else if (tab === 'expenses') {
     content = `
       <div class="alert alert-info">Expenses are recorded against a vehicle only. They are shared across that vehicle’s measured trips by kilometres run — no booking link is required.</div>
       <div class="card">

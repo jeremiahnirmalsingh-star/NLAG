@@ -7,8 +7,10 @@
  * fleet_* tables. Authentication and roles are the existing ABMDAS ones.
  */
 
+const path = require('node:path');
 const auth = require('../auth');
-const { HttpError } = require('../http');
+const { HttpError, saveUpload } = require('../http');
+const { DATA_DIR } = require('../db');
 const {
   audit, notify, nowIso, nextSequence, badRequest, round2,
 } = require('../util');
@@ -62,6 +64,49 @@ const PRIORITIES = [
   { value: 'URGENT', label: 'Urgent' },
   { value: 'EMERGENCY', label: 'Emergency' },
 ];
+const TRIP_CHECKLIST = [
+  { value: 'LICENCE', label: 'Driving licence carried' },
+  { value: 'DOCUMENTS', label: 'Vehicle documents, insurance and permit valid' },
+  { value: 'TYRES_BRAKES', label: 'Tyres, brakes and lights checked' },
+  { value: 'FUEL', label: 'Fuel level recorded' },
+  { value: 'SEATING', label: 'Passenger list and seating verified' },
+  { value: 'SAFETY', label: 'First-aid / emergency kit available' },
+];
+const TRIP_UPDATE_TYPES = [
+  { value: 'PROGRESS', label: 'Progress update' },
+  { value: 'PRAYER_PICKUP', label: 'Prayer pickup' },
+  { value: 'FUEL', label: 'Fuel stop' },
+  { value: 'HALT', label: 'Halt / break' },
+  { value: 'ARRIVAL', label: 'Arrived at destination' },
+];
+const ISSUE_TYPES = [
+  { value: 'MECHANICAL', label: 'Mechanical' },
+  { value: 'TYRE', label: 'Tyre' },
+  { value: 'ELECTRICAL', label: 'Electrical' },
+  { value: 'FUEL', label: 'Fuel' },
+  { value: 'DOCUMENT', label: 'Document / compliance' },
+  { value: 'OTHER', label: 'Other' },
+];
+const SEVERITIES = [
+  { value: 'LOW', label: 'Low' },
+  { value: 'NORMAL', label: 'Normal' },
+  { value: 'HIGH', label: 'High' },
+  { value: 'CRITICAL', label: 'Critical' },
+];
+const SHIFT_STATUSES = [
+  { value: 'ON_DUTY', label: 'On duty' },
+  { value: 'OFF_DUTY', label: 'Off duty' },
+  { value: 'TRIP', label: 'On trip' },
+  { value: 'LEAVE', label: 'Leave' },
+];
+const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const PHOTO_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
+const PHOTO_UPLOAD_DIR = path.join(DATA_DIR, 'uploads', 'fleet-selfies');
+
+function enumOptions(value, options, fallback = null) {
+  const raw = text(value, 60).toUpperCase();
+  return options.some((item) => item.value === raw) ? raw : fallback;
+}
 
 function enumValue(value, allowed, fallback = null) {
   const raw = text(value, 60).toUpperCase();
@@ -95,7 +140,7 @@ const MASTERS = {
     table: 'fleet_vehicles',
     label: 'Vehicle',
     fields: [
-      'reg_no', 'model', 'seats', 'status', 'asset_id', 'active', 'unit_id',
+      'reg_no', 'model', 'seats', 'status', 'asset_id', 'active', 'unit_id', 'odometer_km',
       ...VEHICLE_COMPLIANCE_FIELDS,
     ],
     unique: ['reg_no'],
@@ -107,6 +152,7 @@ const COLUMN_MAP = {
   name: 'name', address: 'address', address_id: 'address_id', lat: 'lat', lng: 'lng',
   maps_url: 'maps_url', reg_no: 'reg_no', model: 'model', seats: 'seats',
   status: 'status', asset_id: 'asset_id', active: 'active', unit_id: 'unit_id',
+  odometer_km: 'odometer_km',
   ...Object.fromEntries(VEHICLE_COMPLIANCE_FIELDS.map((field) => [field, field])),
 };
 
@@ -120,6 +166,7 @@ const API_TO_COLUMN = {
   addressId: 'address_id',
   assetId: 'asset_id',
   unitId: 'unit_id',
+  odometerKm: 'odometer_km',
   ...Object.fromEntries(VEHICLE_COMPLIANCE_FIELDS.map((field) => [camelKey(field), field])),
 };
 
@@ -220,6 +267,10 @@ function attendanceOut(db, row) {
     extraHours: round2(Number(row.extra_hours) || 0),
     status: row.status,
     remarks: row.remarks || '',
+    shiftStatus: row.shift_status || 'ON_DUTY',
+    gpsLat: row.gps_lat == null ? null : Number(row.gps_lat),
+    gpsLng: row.gps_lng == null ? null : Number(row.gps_lng),
+    selfieUrl: row.selfie_path || '',
     unitId: row.unit_id || null,
     approvedAt: row.approved_at || null,
     createdAt: row.created_at,
@@ -358,6 +409,7 @@ function masterOut(row, model) {
       status: row.status,
       assetId: row.asset_id || null,
       unitId: row.unit_id || null,
+      odometerKm: row.odometer_km == null ? null : Number(row.odometer_km),
       ...compliance,
     };
   }
@@ -623,6 +675,209 @@ function coordinate(value, label) {
   return n;
 }
 
+function gpsPair(body, latKey, lngKey, label) {
+  const lat = coordinate(body?.[latKey], `${label} latitude`);
+  const lng = coordinate(body?.[lngKey], `${label} longitude`);
+  if ((lat == null) !== (lng == null)) {
+    throw badRequest(`${label} must include both latitude and longitude, or neither.`);
+  }
+  if (lat != null && Math.abs(lat) > 90) throw badRequest(`${label} latitude is invalid.`);
+  return { lat, lng };
+}
+
+function parseJsonList(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function checklistFromBody(body) {
+  const raw = Array.isArray(body?.checklist)
+    ? body.checklist
+    : parseJsonList(text(body?.checklist, 1000));
+  const allowed = TRIP_CHECKLIST.map((item) => item.value);
+  const selected = allowed.filter((value) => raw.map(String).map((item) => item.toUpperCase()).includes(value));
+  if (selected.length !== allowed.length) {
+    throw badRequest('Complete every item in the trip-start checklist before starting the trip.');
+  }
+  return selected;
+}
+
+function dateTimeField(value, field) {
+  const raw = text(value, 40);
+  if (!raw) throw badRequest(`${field} is required.`);
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) throw badRequest(`${field} must be a valid date and time.`);
+  return parsed.toISOString();
+}
+
+function photoMagicMatches(buffer, mime) {
+  if (mime === 'image/jpeg') return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  if (mime === 'image/png') return buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (mime === 'image/webp') {
+    return buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP';
+  }
+  return false;
+}
+
+function imageFileFromBody(body) {
+  const name = text(body?.fileName || body?.name, 180);
+  const mime = text(body?.mimeType || body?.mime, 60).toLowerCase();
+  const data = String(body?.data || '');
+  if (!name) throw badRequest('Choose a photo to upload.');
+  if (!PHOTO_MIMES.includes(mime)) throw badRequest('Photos must be JPEG, PNG or WebP images.');
+  if (!data || data.length > Math.ceil(PHOTO_MAX_BYTES * 4 / 3) + 16) {
+    throw badRequest('The photo is missing or larger than 5 MB.');
+  }
+  const buffer = Buffer.from(data, 'base64');
+  if (!buffer.length || buffer.length > PHOTO_MAX_BYTES) throw badRequest('The photo is larger than 5 MB.');
+  if (!photoMagicMatches(buffer, mime)) throw badRequest('The uploaded file is not a valid image.');
+  return { name, mime, data };
+}
+
+function photoUrl(db, body, key) {
+  const value = text(body?.[key], 300);
+  if (!value) return '';
+  const match = /^\/api\/files\/fleet-selfie\/(\d+)$/.exec(value);
+  if (!match) throw badRequest('Upload the selfie before saving.');
+  const row = db
+    .prepare('SELECT id FROM fleet_photos WHERE id = ? AND deleted_at IS NULL')
+    .get(Number(match[1]));
+  if (!row) throw badRequest('The uploaded selfie was not found.');
+  return value;
+}
+
+/* The allotted driver is recognised through the common employee code. This
+   keeps a driver's access alive even if the qualification record is later
+   disabled, which matters for historic trips and closure verification. */
+function isAssignedDriver(db, user, trip) {
+  const employeeId = linkedEmployeeId(db, user);
+  return !!employeeId && !!trip && Number(trip.driver_id) === Number(employeeId);
+}
+
+function requireTripActor(ctx, trip) {
+  assertUnitVisible(ctx, trip.unit_id);
+  if (!canManageFleet(ctx.db, ctx.user) && !isAssignedDriver(ctx.db, ctx.user, trip)) {
+    throw new HttpError(403, 'Only the allotted driver or Transport can perform this trip action.');
+  }
+}
+
+function maintenanceRecipientIds(db) {
+  const ids = new Set(transportRecipientIds(db));
+  for (const row of db.prepare("SELECT id FROM users WHERE status = 'Active'").all()) {
+    const user = auth.loadUser(db, row.id);
+    if (user && (user.role_code === 'maintenance_team' || auth.can(user, 'fleet.maintenance.manage'))) {
+      ids.add(user.id);
+    }
+  }
+  return [...ids].filter(Boolean);
+}
+
+function tripParticipantIds(db, trip) {
+  return [...new Set([
+    trip.requester_id,
+    ...driverUserIds(db, trip.driver_id),
+    ...transportRecipientIds(db),
+  ])].filter(Boolean);
+}
+
+function tripUpdateOut(db, row) {
+  const user = row.created_by ? db.prepare('SELECT name FROM users WHERE id = ?').get(row.created_by) : null;
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    type: row.update_type,
+    locationName: row.location_name || '',
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    passengers: row.passengers == null ? null : Number(row.passengers),
+    remarks: row.remarks || '',
+    createdBy: row.created_by || null,
+    createdByName: user?.name || '',
+    createdAt: row.created_at,
+  };
+}
+
+function issueOut(db, row) {
+  const vehicle = db.prepare('SELECT reg_no FROM fleet_vehicles WHERE id = ?').get(row.vehicle_id);
+  const trip = row.trip_id ? db.prepare('SELECT booking_no FROM fleet_trips WHERE id = ?').get(row.trip_id) : null;
+  const reporter = row.reported_by ? db.prepare('SELECT name FROM users WHERE id = ?').get(row.reported_by) : null;
+  const assignee = row.assigned_to ? db.prepare('SELECT name FROM users WHERE id = ?').get(row.assigned_to) : null;
+  return {
+    id: row.id,
+    tripId: row.trip_id || null,
+    bookingNo: trip?.booking_no || '',
+    vehicleId: row.vehicle_id,
+    vehicleRegNo: vehicle?.reg_no || '',
+    unitId: row.unit_id || null,
+    issueType: row.issue_type || 'OTHER',
+    severity: row.severity || 'NORMAL',
+    description: row.description || '',
+    locationName: row.location_name || '',
+    status: row.status,
+    assignedTo: row.assigned_to || null,
+    assignedToName: assignee?.name || '',
+    resolutionRemarks: row.resolution_remarks || '',
+    reportedBy: row.reported_by || null,
+    reportedByName: reporter?.name || '',
+    reportedAt: row.reported_at,
+    resolvedAt: row.resolved_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function accidentOut(db, row) {
+  const vehicle = db.prepare('SELECT reg_no FROM fleet_vehicles WHERE id = ?').get(row.vehicle_id);
+  const trip = row.trip_id ? db.prepare('SELECT booking_no FROM fleet_trips WHERE id = ?').get(row.trip_id) : null;
+  const reporter = row.reported_by ? db.prepare('SELECT name FROM users WHERE id = ?').get(row.reported_by) : null;
+  return {
+    id: row.id,
+    tripId: row.trip_id || null,
+    bookingNo: trip?.booking_no || '',
+    vehicleId: row.vehicle_id,
+    vehicleRegNo: vehicle?.reg_no || '',
+    unitId: row.unit_id || null,
+    occurredAt: row.occurred_at,
+    locationName: row.location_name || '',
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    description: row.description || '',
+    injuries: row.injuries || '',
+    policeReportNo: row.police_report_no || '',
+    severity: row.severity || 'NORMAL',
+    status: row.status,
+    closureRemarks: row.closure_remarks || '',
+    reportedBy: row.reported_by || null,
+    reportedByName: reporter?.name || '',
+    closedAt: row.closed_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function csvCell(value) {
+  if (value == null) return '';
+  const raw = String(value);
+  return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+}
+
+function csvResponse(filename, header, rows) {
+  const lines = [header.map(csvCell).join(',')];
+  for (const row of rows) lines.push(row.map(csvCell).join(','));
+  return {
+    __raw: {
+      contentType: 'text/csv; charset=utf-8',
+      headers: { 'Content-Disposition': `attachment; filename="${filename}"` },
+      body: `\uFEFF${lines.join('\r\n')}`,
+    },
+  };
+}
+
 function locationFromBody(body, kind) {
   const label = kind === 'pickup' ? 'Pickup location' : 'Drop location';
   const name = text(body[`${kind}Name`], 200);
@@ -745,6 +1000,26 @@ function bookingOut(db, row) {
     distanceKm: row.start_km == null || row.end_km == null || Number(row.end_km) <= Number(row.start_km)
       ? null
       : round2(Number(row.end_km) - Number(row.start_km)),
+    startedAt: row.started_at || null,
+    startedBy: row.started_by || null,
+    checklistComplete: !!row.checklist_complete,
+    startChecklist: parseJsonList(row.start_checklist).map((value) => (
+      TRIP_CHECKLIST.find((item) => item.value === value)?.label || value
+    )),
+    startFuelLevel: row.start_fuel_level || '',
+    startCondition: row.start_condition || '',
+    startGpsLat: row.start_gps_lat == null ? null : Number(row.start_gps_lat),
+    startGpsLng: row.start_gps_lng == null ? null : Number(row.start_gps_lng),
+    startSelfieUrl: row.start_selfie_path || '',
+    prayerPickupCount: Number(row.prayer_pickup_count) || 0,
+    closedAt: row.closed_at || null,
+    closedBy: row.closed_by || null,
+    closureRemarks: row.closure_remarks || '',
+    closureGpsLat: row.closure_gps_lat == null ? null : Number(row.closure_gps_lat),
+    closureGpsLng: row.closure_gps_lng == null ? null : Number(row.closure_gps_lng),
+    verifiedAt: row.verified_at || null,
+    verifiedBy: row.verified_by || null,
+    verificationRemarks: row.verification_remarks || '',
     remarks: row.remarks || '',
     createdAt: row.created_at,
     forwardedAt: row.forwarded_at || null,
@@ -757,7 +1032,7 @@ function busyResources(db, startAt, endAt, excludeId) {
   const rows = db
     .prepare(
       `SELECT vehicle_id, driver_id FROM fleet_trips
-        WHERE status = 'ASSIGNED' AND id <> ?
+        WHERE status IN ('ASSIGNED','STARTED','PENDING_VERIFICATION') AND id <> ?
           AND start_at < ? AND end_at > ?`
     )
     .all(excludeId || 0, endAt, startAt);
@@ -825,7 +1100,7 @@ function tripCostReport(db, unitIds = []) {
       `SELECT t.*, v.reg_no, v.model, d.name AS department_name, e.name AS driver_name
          FROM fleet_trips t
          ${joins}
-        WHERE t.status IN ('ASSIGNED', 'COMPLETED')
+        WHERE t.status IN ('ASSIGNED', 'STARTED', 'PENDING_VERIFICATION', 'COMPLETED')
           AND (t.start_km IS NULL OR t.end_km IS NULL OR COALESCE(t.end_km, 0) <= COALESCE(t.start_km, 0))
           AND ${tripScope}
         ORDER BY t.completed_at DESC, t.start_at DESC, t.id DESC`
@@ -990,6 +1265,12 @@ module.exports = function registerFleetRoutes(router) {
       },
       travelCategories: TRAVEL_CATEGORIES,
       priorities: PRIORITIES,
+      tripChecklist: TRIP_CHECKLIST,
+      tripUpdateTypes: TRIP_UPDATE_TYPES,
+      issueTypes: ISSUE_TYPES,
+      severities: SEVERITIES,
+      shiftStatuses: SHIFT_STATUSES,
+      standardHours: STANDARD_DAY_HOURS,
       /* Common masters: Fleet never keeps its own copy of people or departments. */
       departments: ctx.db
         .prepare('SELECT id, name, active FROM departments ORDER BY name COLLATE NOCASE')
@@ -1034,7 +1315,8 @@ module.exports = function registerFleetRoutes(router) {
       .all(...viewerParams);
     const counts = {
       PENDING: 0, FORWARDED: 0, HOLD: 0, SENIOR_APPROVAL: 0,
-      ASSIGNED: 0, COMPLETED: 0, REJECTED: 0,
+      ASSIGNED: 0, STARTED: 0, PENDING_VERIFICATION: 0,
+      COMPLETED: 0, REJECTED: 0,
     };
     for (const row of statusRows) counts[row.status] = Number(row.count) || 0;
     counts.FORWARDED = Number(ctx.db
@@ -1044,7 +1326,9 @@ module.exports = function registerFleetRoutes(router) {
     const upcoming = ctx.db
       .prepare(
         `SELECT * FROM fleet_trips
-          WHERE ${scope}${viewerClause} AND status IN ('PENDING','SENIOR_APPROVAL','ASSIGNED') AND start_at >= ?
+          WHERE ${scope}${viewerClause}
+            AND status IN ('PENDING','SENIOR_APPROVAL','ASSIGNED','STARTED','PENDING_VERIFICATION')
+            AND start_at >= ?
           ORDER BY start_at ASC, id ASC LIMIT 8`
       )
       .all(...viewerParams, nowIso())
@@ -1102,6 +1386,22 @@ module.exports = function registerFleetRoutes(router) {
       standardHours: STANDARD_DAY_HOURS,
     };
 
+    let operations = null;
+    if (admin) {
+      const countWhere = (table, where) => Number(ctx.db
+        .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE deleted_at IS NULL AND ${scope} AND ${where}`)
+        .get().n) || 0;
+      operations = {
+        openIssues: countWhere('fleet_trip_issues', "status IN ('OPEN','IN_PROGRESS')"),
+        resolvedIssues: countWhere('fleet_trip_issues', "status IN ('RESOLVED','CLOSED')"),
+        accidentsUnderReview: countWhere('fleet_accidents', "status IN ('REPORTED','UNDER_REVIEW')"),
+        closedAccidents: countWhere('fleet_accidents', "status = 'CLOSED'"),
+        prayerPickups: Number(ctx.db
+          .prepare(`SELECT SUM(prayer_pickup_count) AS n FROM fleet_trips WHERE ${scope}`)
+          .get().n) || 0,
+      };
+    }
+
     return {
       canManage: admin,
       canSeniorApprove: auth.can(ctx.user, 'fleet.senior.approve'),
@@ -1121,6 +1421,7 @@ module.exports = function registerFleetRoutes(router) {
       expiries,
       cost,
       attendance,
+      operations,
     };
   });
 
@@ -1143,8 +1444,9 @@ module.exports = function registerFleetRoutes(router) {
 
   router.get('/api/fleet/bookings/:id', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
+    const id = Number(ctx.params.id);
     const row = rowOr404(
-      ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(Number(ctx.params.id)),
+      ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id),
       'Booking not found.'
     );
     assertUnitVisible(ctx, row.unit_id);
@@ -1154,7 +1456,20 @@ module.exports = function registerFleetRoutes(router) {
         throw new HttpError(403, 'You do not have permission to view this booking.');
       }
     }
-    return { booking: bookingOut(ctx.db, row) };
+    const booking = bookingOut(ctx.db, row);
+    const updates = ctx.db
+      .prepare('SELECT * FROM fleet_trip_updates WHERE trip_id = ? ORDER BY created_at DESC, id DESC')
+      .all(id)
+      .map((update) => tripUpdateOut(ctx.db, update));
+    const issues = ctx.db
+      .prepare('SELECT * FROM fleet_trip_issues WHERE trip_id = ? AND deleted_at IS NULL ORDER BY reported_at DESC, id DESC')
+      .all(id)
+      .map((issue) => issueOut(ctx.db, issue));
+    const accidents = ctx.db
+      .prepare('SELECT * FROM fleet_accidents WHERE trip_id = ? AND deleted_at IS NULL ORDER BY occurred_at DESC, id DESC')
+      .all(id)
+      .map((accident) => accidentOut(ctx.db, accident));
+    return { booking, updates, issues, accidents };
   });
 
   router.post('/api/fleet/bookings', async (ctx) => {
@@ -1276,7 +1591,7 @@ module.exports = function registerFleetRoutes(router) {
     requireFleetManager(ctx);
     const id = Number(ctx.params.id);
     const action = text((ctx.body || {}).action, 30).toLowerCase();
-    if (!['approve', 'hold', 'forward-senior', 'assign', 'reject', 'complete', 'odometer'].includes(action)) {
+    if (!['approve', 'hold', 'forward-senior', 'assign', 'reject', 'odometer'].includes(action)) {
       throw badRequest('Unknown booking action.');
     }
 
@@ -1422,15 +1737,7 @@ module.exports = function registerFleetRoutes(router) {
           { startKm: nextStart, endKm: nextEnd });
         return;
       }
-      if (booking.status !== 'ASSIGNED') throw badRequest('Only assigned trips can be completed.');
-      const endKm = decimal((ctx.body || {}).endKm, 'Closing km');
-      if (endKm !== null && booking.start_km != null && endKm < Number(booking.start_km)) {
-        throw badRequest('Closing km cannot be less than starting km.');
-      }
-      ctx.db
-        .prepare("UPDATE fleet_trips SET status = 'COMPLETED', end_km = ?, completed_at = ?, updated_at = ? WHERE id = ?")
-        .run(endKm, now, now, id);
-      audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'COMPLETED', endKm });
+      throw badRequest('Unknown booking action.');
     });
     return { ok: true };
   });
@@ -1534,6 +1841,589 @@ module.exports = function registerFleetRoutes(router) {
       `#/fleet/bookings/${id}`
     );
     return { ok: true, status: nextStatus };
+  });
+
+  /* ------------------------ Driver operations ------------------------ */
+  router.post('/api/fleet/photos', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const file = imageFileFromBody(ctx.body || {});
+    const { stored, size } = saveUpload(file, PHOTO_UPLOAD_DIR);
+    const now = nowIso();
+    const result = ctx.db
+      .prepare(
+        `INSERT INTO fleet_photos(category, file_name, stored_name, mime_type, size, uploaded_by, uploaded_at)
+         VALUES (?,?,?,?,?,?,?)`
+      )
+      .run(
+        text((ctx.body || {}).category, 30).toUpperCase() || 'SELFIE',
+        file.name, stored, file.mime, size, ctx.user.id, now
+      );
+    const id = Number(result.lastInsertRowid);
+    audit(ctx, 'CREATE', 'fleet_photo', id, null, { fileName: file.name, mimeType: file.mime, size });
+    return {
+      id,
+      url: `/api/files/fleet-selfie/${id}`,
+      fileName: file.name,
+      mimeType: file.mime,
+      size,
+    };
+  });
+
+  router.post('/api/fleet/trips/:id/start', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const id = Number(ctx.params.id);
+    const b = ctx.body || {};
+    let status = 'STARTED';
+
+    transaction(ctx.db, () => {
+      const trip = rowOr404(ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id), 'Booking not found.');
+      requireTripActor(ctx, trip);
+      if (trip.status !== 'ASSIGNED') throw badRequest('Only an assigned trip can be started.');
+
+      const checklist = checklistFromBody(b);
+      const startKm = decimal(b.startKm ?? trip.start_km, 'Starting km', { required: true });
+      const fuelLevel = text(b.fuelLevel, 80);
+      const condition = text(b.condition, 500);
+      if (!fuelLevel) throw badRequest('Record the starting fuel level.');
+      if (!condition) throw badRequest('Record the vehicle condition at trip start.');
+      const gps = gpsPair(b, 'gpsLat', 'gpsLng', 'Trip start');
+      const selfieUrl = photoUrl(ctx.db, b, 'selfieUrl');
+      const now = nowIso();
+      ctx.db
+        .prepare(
+          `UPDATE fleet_trips
+              SET status = 'STARTED', started_at = ?, started_by = ?, checklist_complete = 1,
+                  start_checklist = ?, start_fuel_level = ?, start_condition = ?,
+                  start_gps_lat = ?, start_gps_lng = ?, start_selfie_path = ?,
+                  start_km = ?, updated_at = ?
+            WHERE id = ?`
+        )
+        .run(
+          now, ctx.user.id, JSON.stringify(checklist), fuelLevel, condition,
+          gps.lat, gps.lng, selfieUrl, startKm, now, id
+        );
+      ctx.db
+        .prepare(
+          `INSERT INTO fleet_trip_updates(
+             trip_id, update_type, location_name, latitude, longitude,
+             passengers, remarks, created_by, created_at
+           ) VALUES (?, 'START', ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id, text(b.locationName || trip.pickup_name || trip.pickup_address, 200),
+          gps.lat, gps.lng, trip.passengers,
+          `Trip started. Checklist: ${checklist.length} items verified. Fuel: ${fuelLevel}. Condition: ${condition}`,
+          ctx.user.id, now
+        );
+      audit(ctx, 'UPDATE', 'fleet_booking', id, { status: trip.status }, {
+        status, startedAt: now, checklist, fuelLevel, condition, startKm,
+      });
+      notify(
+        tripParticipantIds(ctx.db, trip),
+        `${trip.booking_no} started`,
+        `The trip from ${trip.pickup_name || trip.pickup_address} to ${trip.drop_name || trip.drop_address} has started. Fuel: ${fuelLevel}. Vehicle condition: ${condition}.`,
+        `#/fleet/bookings/${id}`
+      );
+    });
+    return { ok: true, status };
+  });
+
+  router.post('/api/fleet/trips/:id/updates', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const id = Number(ctx.params.id);
+    const b = ctx.body || {};
+    const type = enumOptions(b.updateType || b.type, TRIP_UPDATE_TYPES);
+
+    transaction(ctx.db, () => {
+      const trip = rowOr404(ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id), 'Booking not found.');
+      requireTripActor(ctx, trip);
+      if (trip.status !== 'STARTED') throw badRequest('Updates can only be added while a trip is in progress.');
+      if (!type) throw badRequest('Choose a valid trip update type.');
+      const gps = gpsPair(b, 'latitude', 'longitude', 'Update location');
+      const passengerCount = integer(b.passengers, 'Passengers', { min: 0, max: 1000 });
+      const remarks = text(b.remarks, 1000);
+      let pickupCount = 0;
+      let note = remarks;
+      if (type === 'PRAYER_PICKUP') {
+        pickupCount = integer(b.count ?? passengerCount ?? 1, 'Prayer pickup count', { min: 1, max: 1000, required: true });
+        note = `Prayer pickup count: ${pickupCount}.${remarks ? ` ${remarks}` : ''}`;
+      }
+      const now = nowIso();
+      ctx.db
+        .prepare(
+          `INSERT INTO fleet_trip_updates(
+             trip_id, update_type, location_name, latitude, longitude,
+             passengers, remarks, created_by, created_at
+           ) VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          id, type, text(b.locationName, 200), gps.lat, gps.lng,
+          passengerCount, note.slice(0, 1000), ctx.user.id, now
+        );
+      if (pickupCount) {
+        ctx.db
+          .prepare('UPDATE fleet_trips SET prayer_pickup_count = prayer_pickup_count + ?, updated_at = ? WHERE id = ?')
+          .run(pickupCount, now, id);
+      }
+      audit(ctx, 'UPDATE', 'fleet_booking', id, null, {
+        updateType: type, locationName: text(b.locationName, 200), pickupCount,
+      });
+      if (['PRAYER_PICKUP', 'ARRIVAL', 'HALT'].includes(type)) {
+        const label = TRIP_UPDATE_TYPES.find((item) => item.value === type)?.label || type;
+        notify(
+          tripParticipantIds(ctx.db, trip),
+          `${trip.booking_no} — ${label}`,
+          `${label} reported at ${text(b.locationName, 200) || 'an un-named location'}.${note ? ` ${note}` : ''}`,
+          `#/fleet/bookings/${id}`
+        );
+      }
+    });
+    return { ok: true };
+  });
+
+  router.post('/api/fleet/trips/:id/close', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const id = Number(ctx.params.id);
+    const b = ctx.body || {};
+    let status = 'PENDING_VERIFICATION';
+
+    transaction(ctx.db, () => {
+      const trip = rowOr404(ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id), 'Booking not found.');
+      requireTripActor(ctx, trip);
+      if (trip.status !== 'STARTED') throw badRequest('Only an in-progress trip can be closed.');
+      if (trip.start_km == null) throw badRequest('A starting km reading is required before closure.');
+      const endKm = decimal(b.endKm, 'Closing km', { required: true });
+      if (endKm < Number(trip.start_km)) throw badRequest('Closing km cannot be less than starting km.');
+      const gps = gpsPair(b, 'gpsLat', 'gpsLng', 'Trip closure');
+      const closureRemarks = text(b.remarks, 1000);
+      const now = nowIso();
+      ctx.db
+        .prepare(
+          `UPDATE fleet_trips
+              SET status = 'PENDING_VERIFICATION', end_km = ?, closed_at = ?, closed_by = ?,
+                  closure_remarks = ?, closure_gps_lat = ?, closure_gps_lng = ?, updated_at = ?
+            WHERE id = ?`
+        )
+        .run(endKm, now, ctx.user.id, closureRemarks, gps.lat, gps.lng, now, id);
+      if (trip.vehicle_id) {
+        ctx.db
+          .prepare(
+            `UPDATE fleet_vehicles SET odometer_km = ?, updated_at = ?
+              WHERE id = ? AND (odometer_km IS NULL OR odometer_km < ?)`
+          )
+          .run(endKm, now, trip.vehicle_id, endKm);
+      }
+      ctx.db
+        .prepare(
+          `INSERT INTO fleet_trip_updates(
+             trip_id, update_type, location_name, latitude, longitude,
+             passengers, remarks, created_by, created_at
+           ) VALUES (?, 'CLOSURE', ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id, text(b.locationName || trip.drop_name || trip.drop_address, 200),
+          gps.lat, gps.lng, trip.passengers,
+          `Trip closed at ${endKm} km.${closureRemarks ? ` ${closureRemarks}` : ''}`,
+          ctx.user.id, now
+        );
+      audit(ctx, 'UPDATE', 'fleet_booking', id, { status: trip.status }, {
+        status, endKm, closedAt: now, closureRemarks,
+      });
+      notify(
+        tripParticipantIds(ctx.db, trip),
+        `${trip.booking_no} awaiting closure verification`,
+        `The driver closed the trip at ${endKm} km. Transport must verify the closure before it is marked complete.${closureRemarks ? ` Remarks: ${closureRemarks}` : ''}`,
+        `#/fleet/bookings/${id}`
+      );
+    });
+    return { ok: true, status };
+  });
+
+  router.patch('/api/fleet/trips/:id/verify', async (ctx) => {
+    requireFleetManager(ctx);
+    const id = Number(ctx.params.id);
+    const b = ctx.body || {};
+    const action = text(b.action, 20).toLowerCase();
+    if (!['verify', 'return'].includes(action)) throw badRequest('Unknown verification action.');
+    let status = 'COMPLETED';
+
+    transaction(ctx.db, () => {
+      const trip = rowOr404(ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id), 'Booking not found.');
+      assertUnitVisible(ctx, trip.unit_id);
+      if (trip.status !== 'PENDING_VERIFICATION') {
+        throw badRequest('Only trips awaiting verification can be reviewed.');
+      }
+      const remarks = text(b.remarks, 1000);
+      if (action === 'return' && !remarks) throw badRequest('Enter the reason for returning this closure.');
+      const now = nowIso();
+      if (action === 'verify') {
+        ctx.db
+          .prepare(
+            `UPDATE fleet_trips
+                SET status = 'COMPLETED', verified_at = ?, verified_by = ?,
+                    verification_remarks = ?, completed_at = ?, updated_at = ?
+              WHERE id = ?`
+          )
+          .run(now, ctx.user.id, remarks, now, now, id);
+        status = 'COMPLETED';
+      } else {
+        ctx.db
+          .prepare(
+            `UPDATE fleet_trips
+                SET status = 'STARTED', verified_at = NULL, verified_by = NULL,
+                    verification_remarks = ?, closed_at = NULL, closed_by = NULL,
+                    updated_at = ?
+              WHERE id = ?`
+          )
+          .run(remarks, now, id);
+        status = 'STARTED';
+      }
+      audit(ctx, 'UPDATE', 'fleet_booking', id, { status: trip.status }, {
+        verificationAction: action, status, remarks,
+      });
+      notify(
+        tripParticipantIds(ctx.db, trip),
+        `${trip.booking_no} ${action === 'verify' ? 'verified and completed' : 'closure returned'}`,
+        action === 'verify'
+          ? `Transport verified the closure of ${trip.booking_no}.${remarks ? ` Note: ${remarks}` : ''}`
+          : `Transport returned the closure of ${trip.booking_no} for correction: ${remarks}`,
+        `#/fleet/bookings/${id}`
+      );
+    });
+    return { ok: true, status };
+  });
+
+  /* ------------------------- Vehicle issues -------------------------- */
+  router.get('/api/fleet/issues', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const q = ctx.query || {};
+    const clauses = ['deleted_at IS NULL', visibleUnitClause('unit_id', ctx.unitIds)];
+    const params = [];
+    if (q.status && ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'].includes(String(q.status).toUpperCase())) {
+      clauses.push('status = ?');
+      params.push(String(q.status).toUpperCase());
+    }
+    if (q.vehicleId) {
+      clauses.push('vehicle_id = ?');
+      params.push(integer(q.vehicleId, 'Vehicle', { min: 1, max: 100000000 }));
+    }
+    const rows = ctx.db
+      .prepare(`SELECT * FROM fleet_trip_issues WHERE ${clauses.join(' AND ')} ORDER BY reported_at DESC, id DESC`)
+      .all(...params);
+    const assignees = ctx.db
+      .prepare(
+        `SELECT u.id, u.name, r.code AS role_code
+           FROM users u JOIN roles r ON r.id = u.role_id
+          WHERE u.status = 'Active'
+          ORDER BY u.name COLLATE NOCASE`
+      )
+      .all()
+      .map((user) => ({ id: user.id, name: user.name, role: user.role_code }));
+    return {
+      canManage: canManageFleet(ctx.db, ctx.user) || auth.can(ctx.user, 'fleet.maintenance.manage'),
+      issues: rows.map((row) => issueOut(ctx.db, row)),
+      vehicles: masterRows(ctx.db, 'vehicles', ctx.unitIds),
+      assignees,
+      issueTypes: ISSUE_TYPES,
+      severities: SEVERITIES,
+    };
+  });
+
+  router.post('/api/fleet/issues', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const b = ctx.body || {};
+    const vehicleId = integer(b.vehicleId, 'Vehicle', { required: true, min: 1, max: 100000000 });
+    const vehicle = ctx.db
+      .prepare('SELECT id, reg_no, unit_id FROM fleet_vehicles WHERE id = ? AND deleted_at IS NULL')
+      .get(vehicleId);
+    if (!vehicle || !unitVisible(ctx.unitIds, vehicle.unit_id)) throw badRequest('Choose a valid vehicle.');
+    let trip = null;
+    if (b.tripId !== undefined && b.tripId !== null && b.tripId !== '') {
+      trip = rowOr404(
+        ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(integer(b.tripId, 'Trip', { min: 1, max: 100000000 })),
+        'Trip not found.'
+      );
+      assertUnitVisible(ctx, trip.unit_id);
+    }
+    const unitId = trip ? trip.unit_id : selectedUnitId(ctx, b.unitId ?? vehicle.unit_id);
+    assertUnitVisible(ctx, unitId);
+    const description = text(b.description, 2000);
+    if (!description) throw badRequest('Describe the vehicle issue.');
+    const occurredAt = b.reportedAt ? dateTimeField(b.reportedAt, 'Issue time') : nowIso();
+    const now = nowIso();
+    const result = ctx.db
+      .prepare(
+        `INSERT INTO fleet_trip_issues(
+           trip_id, vehicle_id, unit_id, issue_type, severity, description,
+           location_name, status, reported_by, reported_at, created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,'OPEN',?,?,?,?)`
+      )
+      .run(
+        trip?.id || null, vehicleId, unitId,
+        enumOptions(b.issueType, ISSUE_TYPES, 'OTHER'),
+        enumOptions(b.severity, SEVERITIES, 'NORMAL'),
+        description, text(b.locationName, 200), ctx.user.id, occurredAt, now, now
+      );
+    const id = Number(result.lastInsertRowid);
+    const record = issueOut(ctx.db, ctx.db.prepare('SELECT * FROM fleet_trip_issues WHERE id = ?').get(id));
+    audit(ctx, 'CREATE', 'fleet_issue', id, null, record);
+    notify(
+      maintenanceRecipientIds(ctx.db),
+      `${vehicle.reg_no} reported with an issue`,
+      `${record.issueType} issue (${record.severity}) reported by ${record.reportedByName || 'a fleet user'}: ${description}${trip ? ` Trip ${trip.booking_no}.` : ''}`,
+      '#/fleet/issues'
+    );
+    return { id, issue: record };
+  });
+
+  router.patch('/api/fleet/issues/:id', async (ctx) => {
+    if (!canManageFleet(ctx.db, ctx.user) && !auth.can(ctx.user, 'fleet.maintenance.manage')) {
+      throw new HttpError(403, 'You do not have permission to manage vehicle issues.');
+    }
+    const id = Number(ctx.params.id);
+    const b = ctx.body || {};
+    const action = text(b.action, 20).toLowerCase();
+    const idMap = {
+      assign: 'IN_PROGRESS', progress: 'IN_PROGRESS',
+      resolve: 'RESOLVED', close: 'CLOSED', reopen: 'OPEN',
+    };
+    if (!(action in idMap)) throw badRequest('Unknown issue action.');
+
+    let record;
+    transaction(ctx.db, () => {
+      const existing = rowOr404(
+        ctx.db.prepare('SELECT * FROM fleet_trip_issues WHERE id = ? AND deleted_at IS NULL').get(id),
+        'Issue not found.'
+      );
+      assertUnitVisible(ctx, existing.unit_id);
+      const now = nowIso();
+      const remarks = text(b.remarks ?? existing.resolution_remarks, 1000);
+      const status = idMap[action];
+      if (['resolve', 'close'].includes(action) && !remarks) throw badRequest('Enter resolution remarks.');
+      let assignedTo = existing.assigned_to;
+      if (action === 'assign') {
+        assignedTo = integer(b.assignedTo, 'Assign to', { required: true, min: 1, max: 100000000 });
+        if (!ctx.db.prepare('SELECT id FROM users WHERE id = ? AND status = ?').get(assignedTo, 'Active')) {
+          throw badRequest('Choose an active user to assign this issue to.');
+        }
+      }
+      const resolvedAt = ['RESOLVED', 'CLOSED'].includes(status) ? (existing.resolved_at || now) : null;
+      ctx.db
+        .prepare(
+          `UPDATE fleet_trip_issues
+              SET status = ?, assigned_to = ?, resolution_remarks = ?,
+                  resolved_by = ?, resolved_at = ?, updated_at = ?
+            WHERE id = ?`
+        )
+        .run(
+          status, assignedTo, remarks,
+          resolvedAt ? ctx.user.id : null, resolvedAt, now, id
+        );
+      record = issueOut(ctx.db, ctx.db.prepare('SELECT * FROM fleet_trip_issues WHERE id = ?').get(id));
+      audit(ctx, 'UPDATE', 'fleet_issue', id, issueOut(ctx.db, existing), record);
+      notify(
+        [...new Set([
+          existing.reported_by, assignedTo, ...maintenanceRecipientIds(ctx.db),
+        ])].filter(Boolean),
+        `${record.vehicleRegNo} issue ${status.toLowerCase()}`,
+        `${record.issueType} issue is now ${status.toLowerCase()}.${remarks ? ` ${remarks}` : ''}`,
+        '#/fleet/issues'
+      );
+    });
+    return { ok: true, issue: record };
+  });
+
+  /* --------------------------- Accidents ----------------------------- */
+  router.get('/api/fleet/accidents', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const q = ctx.query || {};
+    const clauses = ['deleted_at IS NULL', visibleUnitClause('unit_id', ctx.unitIds)];
+    const params = [];
+    if (q.status && ['REPORTED', 'UNDER_REVIEW', 'CLOSED'].includes(String(q.status).toUpperCase())) {
+      clauses.push('status = ?');
+      params.push(String(q.status).toUpperCase());
+    }
+    const rows = ctx.db
+      .prepare(`SELECT * FROM fleet_accidents WHERE ${clauses.join(' AND ')} ORDER BY occurred_at DESC, id DESC`)
+      .all(...params);
+    return {
+      canManage: canManageFleet(ctx.db, ctx.user) || auth.can(ctx.user, 'fleet.senior.approve'),
+      accidents: rows.map((row) => accidentOut(ctx.db, row)),
+      vehicles: masterRows(ctx.db, 'vehicles', ctx.unitIds),
+      severities: SEVERITIES,
+    };
+  });
+
+  router.post('/api/fleet/accidents', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const b = ctx.body || {};
+    const vehicleId = integer(b.vehicleId, 'Vehicle', { required: true, min: 1, max: 100000000 });
+    const vehicle = ctx.db
+      .prepare('SELECT id, reg_no, unit_id FROM fleet_vehicles WHERE id = ? AND deleted_at IS NULL')
+      .get(vehicleId);
+    if (!vehicle || !unitVisible(ctx.unitIds, vehicle.unit_id)) throw badRequest('Choose a valid vehicle.');
+    let trip = null;
+    if (b.tripId !== undefined && b.tripId !== null && b.tripId !== '') {
+      trip = rowOr404(
+        ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(integer(b.tripId, 'Trip', { min: 1, max: 100000000 })),
+        'Trip not found.'
+      );
+      assertUnitVisible(ctx, trip.unit_id);
+    }
+    const unitId = trip ? trip.unit_id : selectedUnitId(ctx, b.unitId ?? vehicle.unit_id);
+    assertUnitVisible(ctx, unitId);
+    const occurredAt = dateTimeField(b.occurredAt, 'Occurred at');
+    const description = text(b.description, 2000);
+    if (!description) throw badRequest('Describe the accident.');
+    const gps = gpsPair(b, 'latitude', 'longitude', 'Accident location');
+    const now = nowIso();
+    const result = ctx.db
+      .prepare(
+        `INSERT INTO fleet_accidents(
+           trip_id, vehicle_id, unit_id, occurred_at, location_name,
+           latitude, longitude, description, injuries, police_report_no,
+           severity, status, reported_by, created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'REPORTED',?,?,?)`
+      )
+      .run(
+        trip?.id || null, vehicleId, unitId, occurredAt, text(b.locationName, 300),
+        gps.lat, gps.lng, description, text(b.injuries, 1000), text(b.policeReportNo, 100),
+        enumOptions(b.severity, SEVERITIES, 'NORMAL'), ctx.user.id, now, now
+      );
+    const id = Number(result.lastInsertRowid);
+    const record = accidentOut(ctx.db, ctx.db.prepare('SELECT * FROM fleet_accidents WHERE id = ?').get(id));
+    audit(ctx, 'CREATE', 'fleet_accident', id, null, record);
+    notify(
+      [...new Set([...transportRecipientIds(ctx.db), ...seniorRecipientIds(ctx.db)])],
+      `Accident reported for ${vehicle.reg_no}`,
+      `${record.severity} severity accident at ${record.locationName || 'an un-named location'}: ${description}${trip ? ` Trip ${trip.booking_no}.` : ''}`,
+      '#/fleet/accidents'
+    );
+    return { id, accident: record };
+  });
+
+  router.patch('/api/fleet/accidents/:id', async (ctx) => {
+    if (!canManageFleet(ctx.db, ctx.user) && !auth.can(ctx.user, 'fleet.senior.approve')) {
+      throw new HttpError(403, 'You do not have permission to manage accidents.');
+    }
+    const id = Number(ctx.params.id);
+    const b = ctx.body || {};
+    const action = text(b.action, 20).toLowerCase();
+    const statusMap = { review: 'UNDER_REVIEW', close: 'CLOSED', reopen: 'REPORTED' };
+    if (!(action in statusMap)) throw badRequest('Unknown accident action.');
+
+    let record;
+    transaction(ctx.db, () => {
+      const existing = rowOr404(
+        ctx.db.prepare('SELECT * FROM fleet_accidents WHERE id = ? AND deleted_at IS NULL').get(id),
+        'Accident not found.'
+      );
+      assertUnitVisible(ctx, existing.unit_id);
+      const status = statusMap[action];
+      const remarks = text(b.remarks ?? existing.closure_remarks, 1000);
+      if (action === 'close' && !remarks) throw badRequest('Enter accident closure remarks.');
+      const now = nowIso();
+      ctx.db
+        .prepare(
+          `UPDATE fleet_accidents
+              SET status = ?, closure_remarks = ?, closed_by = ?, closed_at = ?, updated_at = ?
+            WHERE id = ?`
+        )
+        .run(
+          status, remarks,
+          status === 'CLOSED' ? ctx.user.id : null,
+          status === 'CLOSED' ? now : null,
+          now, id
+        );
+      record = accidentOut(ctx.db, ctx.db.prepare('SELECT * FROM fleet_accidents WHERE id = ?').get(id));
+      audit(ctx, 'UPDATE', 'fleet_accident', id, accidentOut(ctx.db, existing), record);
+      notify(
+        [...new Set([existing.reported_by, ...transportRecipientIds(ctx.db), ...seniorRecipientIds(ctx.db)])],
+        `Accident for ${record.vehicleRegNo} ${status.toLowerCase()}`,
+        `${record.severity} severity accident is now ${status.toLowerCase()}.${remarks ? ` ${remarks}` : ''}`,
+        '#/fleet/accidents'
+      );
+    });
+    return { ok: true, accident: record };
+  });
+
+  /* --------------------------- Reports -------------------------------- */
+  router.get('/api/fleet/reports/:type', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const type = text(ctx.params.type, 40).toLowerCase();
+    const format = text(ctx.query?.format, 10).toLowerCase();
+    const scope = visibleUnitClause('unit_id', ctx.unitIds);
+    const viewAll = canViewAllFleet(ctx.db, ctx.user);
+    const driverId = viewAll ? null : linkedEmployeeId(ctx.db, ctx.user);
+    let title = '';
+    let header = [];
+    let rows = [];
+
+    if (type === 'bookings') {
+      title = 'Fleet booking register';
+      header = ['Booking No', 'Status', 'Requester', 'Department', 'Pickup', 'Drop', 'Start', 'Expected Return', 'Vehicle', 'Driver', 'Priority', 'Travel Category', 'Prayer Pickups', 'Created'];
+      const viewerClause = viewAll ? '' : ' AND (requester_id = ? OR (? IS NOT NULL AND driver_id = ?))';
+      const params = viewAll ? [] : [ctx.user.id, driverId, driverId];
+      const dbRows = ctx.db
+        .prepare(`SELECT * FROM fleet_trips WHERE ${scope}${viewerClause} ORDER BY start_at DESC, id DESC`)
+        .all(...params);
+      rows = dbRows.map((row) => {
+        const b = bookingOut(ctx.db, row);
+        return [
+          b.bookingNo, b.status, b.requesterName, b.departmentName,
+          b.pickupName || b.pickupAddress, b.dropName || b.dropAddress,
+          b.startAt, b.expectedReturnAt, b.vehicleRegNo, b.driverName,
+          b.priorityLabel, b.travelCategoryLabel, b.prayerPickupCount, b.createdAt,
+        ];
+      });
+    } else if (type === 'attendance') {
+      title = 'Driver attendance register';
+      header = ['Date', 'Driver', 'Code', 'Check In', 'Check Out', 'Hours', 'Extra Hours', 'Shift', 'Status', 'Remarks'];
+      const admin = canManageFleet(ctx.db, ctx.user);
+      const dbRows = attendanceRowsFor(ctx.db, ctx.unitIds, admin ? null : (driverId ?? 0));
+      rows = dbRows.map((row) => {
+        const a = attendanceOut(ctx.db, row);
+        return [a.date, a.driverName, a.driverCode, a.checkIn, a.checkOut, a.hours, a.extraHours, a.shiftStatus, a.status, a.remarks];
+      });
+    } else if (type === 'issues') {
+      title = 'Vehicle issue register';
+      header = ['Reported At', 'Vehicle', 'Trip', 'Type', 'Severity', 'Description', 'Location', 'Status', 'Assigned To', 'Resolution'];
+      const dbRows = ctx.db
+        .prepare(`SELECT * FROM fleet_trip_issues WHERE deleted_at IS NULL AND ${scope} ORDER BY reported_at DESC, id DESC`)
+        .all();
+      rows = dbRows.map((row) => {
+        const i = issueOut(ctx.db, row);
+        return [i.reportedAt, i.vehicleRegNo, i.bookingNo, i.issueType, i.severity, i.description, i.locationName, i.status, i.assignedToName, i.resolutionRemarks];
+      });
+    } else if (type === 'accidents') {
+      title = 'Accident register';
+      header = ['Occurred At', 'Vehicle', 'Trip', 'Location', 'Severity', 'Description', 'Injuries', 'Police Report', 'Status', 'Closure Remarks'];
+      const dbRows = ctx.db
+        .prepare(`SELECT * FROM fleet_accidents WHERE deleted_at IS NULL AND ${scope} ORDER BY occurred_at DESC, id DESC`)
+        .all();
+      rows = dbRows.map((row) => {
+        const a = accidentOut(ctx.db, row);
+        return [a.occurredAt, a.vehicleRegNo, a.bookingNo, a.locationName, a.severity, a.description, a.injuries, a.policeReportNo, a.status, a.closureRemarks];
+      });
+    } else if (type === 'audit') {
+      title = 'Fleet audit history';
+      header = ['Timestamp', 'User ID', 'Action', 'Entity', 'Entity ID', 'Previous', 'New'];
+      const dbRows = ctx.db
+        .prepare(
+          `SELECT * FROM audit_logs WHERE entity_type LIKE 'fleet_%'
+            ORDER BY created_at DESC, id DESC LIMIT 1000`
+        )
+        .all();
+      rows = dbRows.map((row) => [
+        row.created_at, row.user_id ?? '', row.action, row.entity_type, row.entity_id,
+        row.old_value || '', row.new_value || '',
+      ]);
+    } else {
+      throw new HttpError(404, 'Unknown fleet report.');
+    }
+
+    if (format === 'csv') return csvResponse(`fleet-${type}.csv`, header, rows);
+    return { type, title, header, rows, count: rows.length };
   });
 
   /* ---------------------------- Operations --------------------------- */
@@ -1654,6 +2544,9 @@ module.exports = function registerFleetRoutes(router) {
     const checkIn = timeField(b.checkIn, 'Check-in');
     const checkOut = timeField(b.checkOut, 'Check-out');
     const { hours, extraHours } = workedHours(checkIn, checkOut);
+    const shiftStatus = enumOptions(b.shiftStatus, SHIFT_STATUSES, 'ON_DUTY');
+    const gps = gpsPair(b, 'gpsLat', 'gpsLng', 'Attendance location');
+    const selfieUrl = photoUrl(ctx.db, b, 'selfieUrl');
     const duplicate = ctx.db
       .prepare('SELECT id FROM fleet_driver_attendance WHERE driver_id = ? AND attendance_date = ? AND deleted_at IS NULL')
       .get(driverId, date);
@@ -1666,13 +2559,14 @@ module.exports = function registerFleetRoutes(router) {
       .prepare(
         `INSERT INTO fleet_driver_attendance(
            driver_id, attendance_date, check_in, check_out, hours, extra_hours,
-           status, remarks, unit_id, created_by, approved_by, approved_at,
-           created_at, updated_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+           status, remarks, shift_status, gps_lat, gps_lng, selfie_path,
+           unit_id, created_by, approved_by, approved_at, created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .run(
         driverId, date, checkIn, checkOut, hours, extraHours, status,
-        text(b.remarks, 500), unitId, ctx.user.id,
+        text(b.remarks, 500), shiftStatus, gps.lat, gps.lng, selfieUrl,
+        unitId, ctx.user.id,
         admin ? ctx.user.id : null, admin ? now : null, now, now
       );
     const id = Number(result.lastInsertRowid);
@@ -1711,9 +2605,30 @@ module.exports = function registerFleetRoutes(router) {
       const checkIn = timeField(b.checkIn ?? existing.check_in, 'Check-in');
       const checkOut = timeField(b.checkOut ?? existing.check_out, 'Check-out');
       const { hours, extraHours } = workedHours(checkIn, checkOut);
+      const shiftStatus = enumOptions(
+        b.shiftStatus ?? existing.shift_status, SHIFT_STATUSES, existing.shift_status || 'ON_DUTY'
+      );
+      const gps = gpsPair(
+        {
+          gpsLat: b.gpsLat === undefined ? existing.gps_lat : b.gpsLat,
+          gpsLng: b.gpsLng === undefined ? existing.gps_lng : b.gpsLng,
+        },
+        'gpsLat', 'gpsLng', 'Attendance location'
+      );
+      const selfieUrl = b.selfieUrl === undefined
+        ? existing.selfie_path || ''
+        : photoUrl(ctx.db, b, 'selfieUrl');
       ctx.db
-        .prepare('UPDATE fleet_driver_attendance SET check_in = ?, check_out = ?, hours = ?, extra_hours = ?, remarks = ?, updated_at = ? WHERE id = ?')
-        .run(checkIn, checkOut, hours, extraHours, text(b.remarks ?? existing.remarks, 500), now, id);
+        .prepare(
+          `UPDATE fleet_driver_attendance
+              SET check_in = ?, check_out = ?, hours = ?, extra_hours = ?, remarks = ?,
+                  shift_status = ?, gps_lat = ?, gps_lng = ?, selfie_path = ?, updated_at = ?
+            WHERE id = ?`
+        )
+        .run(
+          checkIn, checkOut, hours, extraHours, text(b.remarks ?? existing.remarks, 500),
+          shiftStatus, gps.lat, gps.lng, selfieUrl, now, id
+        );
     } else {
       throw badRequest('Unknown attendance action.');
     }

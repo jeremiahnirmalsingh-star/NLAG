@@ -7,6 +7,8 @@ const STATUS_LABELS = {
   HOLD: 'Hold',
   SENIOR_APPROVAL: 'Senior Approval',
   ASSIGNED: 'Assigned',
+  STARTED: 'In progress',
+  PENDING_VERIFICATION: 'Awaiting verification',
   REJECTED: 'Rejected',
   COMPLETED: 'Completed',
 };
@@ -67,7 +69,7 @@ export async function render(ctx) {
       <td>${expiryBadge(item.days)}</td>
     </tr>`).join('');
 
-  const statusRows = ['FORWARDED', 'SENIOR_APPROVAL', 'HOLD', 'ASSIGNED', 'COMPLETED', 'REJECTED'].map((status) => `
+  const statusRows = ['FORWARDED', 'SENIOR_APPROVAL', 'HOLD', 'ASSIGNED', 'STARTED', 'PENDING_VERIFICATION', 'COMPLETED', 'REJECTED'].map((status) => `
     <tr><td>${STATUS_LABELS[status]}</td><td class="num">${num(counts[status] || 0)}</td></tr>`).join('');
 
   const myTrips = upcoming.filter((trip) => trip.isMine);
@@ -91,12 +93,23 @@ export async function render(ctx) {
 
     <div class="grid grid-4">
       <div class="card"><div class="kpi"><div class="chip amber">${icon('send')}</div><div><div class="label">Awaiting allotment</div><div class="value">${num(counts.PENDING || 0)}</div><div class="meta">${num(counts.FORWARDED || 0)} forwarded · ${num(counts.SENIOR_APPROVAL || 0)} senior review · ${num(counts.HOLD || 0)} on hold</div></div></div></div>
-      <div class="card"><div class="kpi"><div class="chip blue">${icon('car')}</div><div><div class="label">Assigned trips</div><div class="value">${num(counts.ASSIGNED || 0)}</div><div class="meta">${num(counts.COMPLETED || 0)} completed</div></div></div></div>
+      <div class="card"><div class="kpi"><div class="chip blue">${icon('car')}</div><div><div class="label">Active trips</div><div class="value">${num((counts.ASSIGNED || 0) + (counts.STARTED || 0) + (counts.PENDING_VERIFICATION || 0))}</div><div class="meta">${num(counts.ASSIGNED || 0)} assigned · ${num(counts.STARTED || 0)} in progress · ${num(counts.PENDING_VERIFICATION || 0)} awaiting verification</div></div></div></div>
       <div class="card"><div class="kpi"><div class="chip teal">${icon('layers')}</div><div><div class="label">Vehicles ready</div><div class="value">${num(fleet.readyVehicles || 0)}</div><div class="meta">of ${num(fleet.vehicles || 0)} · ${num(fleet.inServiceVehicles || 0)} in service</div></div></div></div>
       <div class="card"><div class="kpi"><div class="chip purple">${icon('users')}</div><div><div class="label">Active drivers</div><div class="value">${num(fleet.drivers || 0)}</div><div class="meta">from the common employee master</div></div></div></div>
     </div>
 
     ${data.canManage && data.cost ? `<div class="alert alert-info mt-16">Fleet cost to date ${money(data.cost.totalExpenses)} over ${num(data.cost.distanceKm)} measured km · ${money(data.cost.costPerKm)} per km. ${num(data.cost.unallocatedTrips)} trip${data.cost.unallocatedTrips === 1 ? '' : 's'} still need km readings.</div>` : ''}
+
+    ${data.canManage && data.operations ? `
+      <div class="card mt-16">
+        <div class="card-head"><div><h3>Operations &amp; compliance</h3><div class="sub">Issues, accidents and prayer-pickup activity recorded across the fleet</div></div></div>
+        <div class="grid grid-4">
+          <div class="kpi"><div class="chip amber">${icon('alert')}</div><div><div class="label">Open issues</div><div class="value">${num(data.operations.openIssues || 0)}</div><div class="meta">${num(data.operations.resolvedIssues || 0)} resolved / closed</div></div></div>
+          <div class="kpi"><div class="chip purple">${icon('alert')}</div><div><div class="label">Accidents in review</div><div class="value">${num(data.operations.accidentsUnderReview || 0)}</div><div class="meta">${num(data.operations.closedAccidents || 0)} closed</div></div></div>
+          <div class="kpi"><div class="chip teal">${icon('users')}</div><div><div class="label">Prayer pickups</div><div class="value">${num(data.operations.prayerPickups || 0)}</div><div class="meta">recorded on trips</div></div></div>
+          <div class="kpi"><div class="chip blue">${icon('file')}</div><div><div class="label">Reports &amp; audit</div><div class="value">4</div><div class="meta"><a href="#/fleet/issues">Issues</a> · <a href="#/fleet/accidents">Accidents</a> · <a href="#/fleet/reports">Registers</a></div></div></div>
+        </div>
+      </div>` : ''}
 
     <div class="card mt-16">
       <div class="card-head">

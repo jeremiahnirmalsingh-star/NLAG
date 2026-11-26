@@ -69,6 +69,7 @@ function ensureFleetSchema(db) {
       pollution_cert_no        TEXT NOT NULL DEFAULT '',
       pollution_cert_date      TEXT,
       pollution_expiry_date    TEXT,
+      odometer_km              REAL,
       created_at               TEXT NOT NULL,
       updated_at               TEXT NOT NULL,
       deleted_at               TEXT,
@@ -110,7 +111,7 @@ function ensureFleetSchema(db) {
       priority        TEXT NOT NULL DEFAULT 'NORMAL',
       special_remarks TEXT NOT NULL DEFAULT '',
       status          TEXT NOT NULL DEFAULT 'PENDING'
-                        CHECK (status IN ('PENDING','HOLD','SENIOR_APPROVAL','ASSIGNED','REJECTED','COMPLETED')),
+                        CHECK (status IN ('PENDING','HOLD','SENIOR_APPROVAL','ASSIGNED','STARTED','PENDING_VERIFICATION','REJECTED','COMPLETED')),
       vehicle_id      INTEGER REFERENCES fleet_vehicles(id),
       driver_id       INTEGER REFERENCES employees(id),
       remarks         TEXT NOT NULL DEFAULT '',
@@ -119,6 +120,24 @@ function ensureFleetSchema(db) {
       senior_approval_reason TEXT NOT NULL DEFAULT '',
       senior_approved_at TEXT,
       senior_decision_remarks TEXT NOT NULL DEFAULT '',
+      started_at      TEXT,
+      started_by      INTEGER REFERENCES users(id),
+      checklist_complete INTEGER NOT NULL DEFAULT 0,
+      start_checklist TEXT NOT NULL DEFAULT '',
+      start_fuel_level TEXT NOT NULL DEFAULT '',
+      start_condition TEXT NOT NULL DEFAULT '',
+      start_gps_lat   REAL,
+      start_gps_lng   REAL,
+      start_selfie_path TEXT NOT NULL DEFAULT '',
+      prayer_pickup_count INTEGER NOT NULL DEFAULT 0,
+      closed_at       TEXT,
+      closed_by       INTEGER REFERENCES users(id),
+      closure_remarks TEXT NOT NULL DEFAULT '',
+      closure_gps_lat REAL,
+      closure_gps_lng REAL,
+      verified_at     TEXT,
+      verified_by     INTEGER REFERENCES users(id),
+      verification_remarks TEXT NOT NULL DEFAULT '',
       created_at      TEXT NOT NULL,
       updated_at      TEXT NOT NULL,
       assigned_at     TEXT,
@@ -179,6 +198,10 @@ function ensureFleetSchema(db) {
       status          TEXT NOT NULL DEFAULT 'PENDING'
                         CHECK (status IN ('PENDING','APPROVED','REJECTED')),
       remarks         TEXT NOT NULL DEFAULT '',
+      shift_status    TEXT NOT NULL DEFAULT 'ON_DUTY',
+      gps_lat         REAL,
+      gps_lng         REAL,
+      selfie_path     TEXT NOT NULL DEFAULT '',
       unit_id         INTEGER REFERENCES units(id),
       created_by      INTEGER REFERENCES users(id),
       approved_by     INTEGER REFERENCES users(id),
@@ -211,6 +234,7 @@ function ensureFleetSchema(db) {
   addColumn('fleet_areas', 'unit_id', 'INTEGER REFERENCES units(id)');
   addColumn('fleet_vehicles', 'asset_id', 'INTEGER REFERENCES assets(id)');
   addColumn('fleet_vehicles', 'unit_id', 'INTEGER REFERENCES units(id)');
+  addColumn('fleet_vehicles', 'odometer_km', 'REAL');
   addColumn('fleet_trips', 'start_km', 'REAL');
   addColumn('fleet_trips', 'end_km', 'REAL');
   addColumn('fleet_trips', 'unit_id', 'INTEGER REFERENCES units(id)');
@@ -229,12 +253,122 @@ function ensureFleetSchema(db) {
   addColumn('fleet_trips', 'senior_approval_reason', "TEXT NOT NULL DEFAULT ''");
   addColumn('fleet_trips', 'senior_approved_at', 'TEXT');
   addColumn('fleet_trips', 'senior_decision_remarks', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'started_at', 'TEXT');
+  addColumn('fleet_trips', 'started_by', 'INTEGER REFERENCES users(id)');
+  addColumn('fleet_trips', 'checklist_complete', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('fleet_trips', 'start_checklist', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'start_fuel_level', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'start_condition', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'start_gps_lat', 'REAL');
+  addColumn('fleet_trips', 'start_gps_lng', 'REAL');
+  addColumn('fleet_trips', 'start_selfie_path', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'prayer_pickup_count', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('fleet_trips', 'closed_at', 'TEXT');
+  addColumn('fleet_trips', 'closed_by', 'INTEGER REFERENCES users(id)');
+  addColumn('fleet_trips', 'closure_remarks', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'closure_gps_lat', 'REAL');
+  addColumn('fleet_trips', 'closure_gps_lng', 'REAL');
+  addColumn('fleet_trips', 'verified_at', 'TEXT');
+  addColumn('fleet_trips', 'verified_by', 'INTEGER REFERENCES users(id)');
+  addColumn('fleet_trips', 'verification_remarks', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_driver_attendance', 'shift_status', "TEXT NOT NULL DEFAULT 'ON_DUTY'");
+  addColumn('fleet_driver_attendance', 'gps_lat', 'REAL');
+  addColumn('fleet_driver_attendance', 'gps_lng', 'REAL');
+  addColumn('fleet_driver_attendance', 'selfie_path', "TEXT NOT NULL DEFAULT ''");
   addColumn('fleet_vehicle_expenses', 'unit_id', 'INTEGER REFERENCES units(id)');
 
   /* Older databases have a status CHECK that only allows four states. Rebuild
      once, preserving every row and all additive columns, so Hold and Senior
      Approval can be stored. The marker makes this repeat-safe. */
   ensureTripApprovalStatus(db);
+
+  /* Driver trip operations. These tables are created only after the status
+     rebuild so a foreign key to fleet_trips can never block it. */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fleet_photos (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      category     TEXT NOT NULL DEFAULT 'SELFIE',
+      file_name    TEXT NOT NULL,
+      stored_name  TEXT NOT NULL,
+      mime_type    TEXT NOT NULL,
+      size         INTEGER NOT NULL DEFAULT 0,
+      uploaded_by  INTEGER REFERENCES users(id),
+      uploaded_at  TEXT NOT NULL,
+      deleted_at   TEXT,
+      deleted_by   INTEGER REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fleet_photos_uploaded ON fleet_photos(uploaded_at DESC);
+
+    CREATE TABLE IF NOT EXISTS fleet_trip_updates (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id      INTEGER NOT NULL REFERENCES fleet_trips(id) ON DELETE CASCADE,
+      update_type  TEXT NOT NULL
+                     CHECK (update_type IN ('START','PROGRESS','PRAYER_PICKUP','FUEL','HALT','ARRIVAL','CLOSURE')),
+      location_name TEXT NOT NULL DEFAULT '',
+      latitude     REAL,
+      longitude    REAL,
+      passengers   INTEGER,
+      remarks      TEXT NOT NULL DEFAULT '',
+      created_by   INTEGER REFERENCES users(id),
+      created_at   TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fleet_trip_updates_trip
+      ON fleet_trip_updates(trip_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS fleet_trip_issues (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id       INTEGER REFERENCES fleet_trips(id) ON DELETE SET NULL,
+      vehicle_id    INTEGER NOT NULL REFERENCES fleet_vehicles(id),
+      unit_id       INTEGER REFERENCES units(id),
+      issue_type    TEXT NOT NULL DEFAULT 'OTHER',
+      severity      TEXT NOT NULL DEFAULT 'NORMAL',
+      description   TEXT NOT NULL DEFAULT '',
+      location_name TEXT NOT NULL DEFAULT '',
+      status        TEXT NOT NULL DEFAULT 'OPEN'
+                      CHECK (status IN ('OPEN','IN_PROGRESS','RESOLVED','CLOSED')),
+      assigned_to   INTEGER REFERENCES users(id),
+      resolution_remarks TEXT NOT NULL DEFAULT '',
+      reported_by   INTEGER REFERENCES users(id),
+      resolved_by   INTEGER REFERENCES users(id),
+      reported_at   TEXT NOT NULL,
+      resolved_at   TEXT,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      deleted_at    TEXT,
+      deleted_by    INTEGER REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fleet_trip_issues_status ON fleet_trip_issues(status);
+    CREATE INDEX IF NOT EXISTS idx_fleet_trip_issues_vehicle ON fleet_trip_issues(vehicle_id, reported_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_fleet_trip_issues_unit ON fleet_trip_issues(unit_id);
+
+    CREATE TABLE IF NOT EXISTS fleet_accidents (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id         INTEGER REFERENCES fleet_trips(id) ON DELETE SET NULL,
+      vehicle_id      INTEGER NOT NULL REFERENCES fleet_vehicles(id),
+      unit_id         INTEGER REFERENCES units(id),
+      occurred_at     TEXT NOT NULL,
+      location_name   TEXT NOT NULL DEFAULT '',
+      latitude        REAL,
+      longitude       REAL,
+      description     TEXT NOT NULL DEFAULT '',
+      injuries        TEXT NOT NULL DEFAULT '',
+      police_report_no TEXT NOT NULL DEFAULT '',
+      severity        TEXT NOT NULL DEFAULT 'NORMAL',
+      status          TEXT NOT NULL DEFAULT 'REPORTED'
+                        CHECK (status IN ('REPORTED','UNDER_REVIEW','CLOSED')),
+      closure_remarks TEXT NOT NULL DEFAULT '',
+      reported_by     INTEGER REFERENCES users(id),
+      closed_by       INTEGER REFERENCES users(id),
+      closed_at       TEXT,
+      created_at      TEXT NOT NULL,
+      updated_at      TEXT NOT NULL,
+      deleted_at      TEXT,
+      deleted_by      INTEGER REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fleet_accidents_status ON fleet_accidents(status);
+    CREATE INDEX IF NOT EXISTS idx_fleet_accidents_vehicle ON fleet_accidents(vehicle_id, occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_fleet_accidents_unit ON fleet_accidents(unit_id);
+  `);
 
   /* Vehicle compliance details are stored on the vehicle master, which is the
      record the transport incharge maintains. All additions are nullable or
@@ -286,6 +420,9 @@ function ensureFleetSchema(db) {
   db.prepare(
     'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
   ).run('migration.fleet_trip_approvals.v1', new Date().toISOString());
+  db.prepare(
+    'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
+  ).run('migration.fleet_trip_operations.v1', new Date().toISOString());
 }
 
 function ensureTripLocationColumns(db) {
@@ -394,7 +531,8 @@ function ensureTripApprovalStatus(db) {
   const row = db
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fleet_trips'")
     .get();
-  if (row && String(row.sql || '').includes('SENIOR_APPROVAL')) return;
+  const sql = String(row?.sql || '');
+  if (sql.includes('PENDING_VERIFICATION') && sql.includes("'STARTED'")) return;
 
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -430,7 +568,7 @@ function ensureTripApprovalStatus(db) {
         priority        TEXT NOT NULL DEFAULT 'NORMAL',
         special_remarks TEXT NOT NULL DEFAULT '',
         status          TEXT NOT NULL DEFAULT 'PENDING'
-                          CHECK (status IN ('PENDING','HOLD','SENIOR_APPROVAL','ASSIGNED','REJECTED','COMPLETED')),
+                          CHECK (status IN ('PENDING','HOLD','SENIOR_APPROVAL','ASSIGNED','STARTED','PENDING_VERIFICATION','REJECTED','COMPLETED')),
         vehicle_id      INTEGER REFERENCES fleet_vehicles(id),
         driver_id       INTEGER REFERENCES employees(id),
         remarks         TEXT NOT NULL DEFAULT '',
@@ -439,6 +577,24 @@ function ensureTripApprovalStatus(db) {
         senior_approval_reason TEXT NOT NULL DEFAULT '',
         senior_approved_at TEXT,
         senior_decision_remarks TEXT NOT NULL DEFAULT '',
+        started_at      TEXT,
+        started_by      INTEGER REFERENCES users(id),
+        checklist_complete INTEGER NOT NULL DEFAULT 0,
+        start_checklist TEXT NOT NULL DEFAULT '',
+        start_fuel_level TEXT NOT NULL DEFAULT '',
+        start_condition TEXT NOT NULL DEFAULT '',
+        start_gps_lat   REAL,
+        start_gps_lng   REAL,
+        start_selfie_path TEXT NOT NULL DEFAULT '',
+        prayer_pickup_count INTEGER NOT NULL DEFAULT 0,
+        closed_at       TEXT,
+        closed_by       INTEGER REFERENCES users(id),
+        closure_remarks TEXT NOT NULL DEFAULT '',
+        closure_gps_lat REAL,
+        closure_gps_lng REAL,
+        verified_at     TEXT,
+        verified_by     INTEGER REFERENCES users(id),
+        verification_remarks TEXT NOT NULL DEFAULT '',
         start_km        REAL,
         end_km          REAL,
         unit_id         INTEGER REFERENCES units(id),
@@ -458,8 +614,12 @@ function ensureTripApprovalStatus(db) {
         expected_return_at, priority, special_remarks, status, vehicle_id,
         driver_id, remarks, hold_reason, transport_approved_at,
         senior_approval_reason, senior_approved_at, senior_decision_remarks,
-        start_km, end_km, unit_id, created_at, updated_at, assigned_at,
-        completed_at, forwarded_at
+        started_at, started_by, checklist_complete, start_checklist,
+        start_fuel_level, start_condition, start_gps_lat, start_gps_lng,
+        start_selfie_path, prayer_pickup_count, closed_at, closed_by,
+        closure_remarks, closure_gps_lat, closure_gps_lng, verified_at,
+        verified_by, verification_remarks, start_km, end_km, unit_id,
+        created_at, updated_at, assigned_at, completed_at, forwarded_at
       )
       SELECT
         id, booking_no, requester_id, department_id, pickup_id, drop_id,
@@ -474,6 +634,13 @@ function ensureTripApprovalStatus(db) {
         COALESCE(hold_reason, ''), transport_approved_at,
         COALESCE(senior_approval_reason, ''), senior_approved_at,
         COALESCE(senior_decision_remarks, ''),
+        started_at, started_by, COALESCE(checklist_complete, 0),
+        COALESCE(start_checklist, ''), COALESCE(start_fuel_level, ''),
+        COALESCE(start_condition, ''), start_gps_lat, start_gps_lng,
+        COALESCE(start_selfie_path, ''), COALESCE(prayer_pickup_count, 0),
+        closed_at, closed_by, COALESCE(closure_remarks, ''),
+        closure_gps_lat, closure_gps_lng, verified_at, verified_by,
+        COALESCE(verification_remarks, ''),
         start_km, end_km, unit_id, created_at, updated_at, assigned_at,
         completed_at, forwarded_at
       FROM fleet_trips;

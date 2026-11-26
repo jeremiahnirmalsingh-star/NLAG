@@ -4,7 +4,7 @@ import { navigate, withQuery } from '../router.js';
 import { chooseMapLocation } from '../osm-picker.js';
 import {
   esc, icon, statusBadge, emptyState, toast, field, modal, confirmDialog, actionDialog,
-  fmtDate, serializeForm,
+  fmtDate, serializeForm, readFileAsBase64,
 } from '../ui.js';
 
 const BOOKING_STATUS = {
@@ -13,6 +13,8 @@ const BOOKING_STATUS = {
   HOLD: 'Hold',
   SENIOR_APPROVAL: 'Senior Approval',
   ASSIGNED: 'Assigned',
+  STARTED: 'In progress',
+  PENDING_VERIFICATION: 'Awaiting verification',
   REJECTED: 'Rejected',
   COMPLETED: 'Completed',
 };
@@ -356,6 +358,66 @@ export async function renderBookingDetail(ctx, options = {}) {
     }
   };
 
+  const isTripActor = canManage || isAssignedToMe;
+  const tripChecklist = meta.tripChecklist || [];
+  const updateTypes = meta.tripUpdateTypes || [];
+  const opAct = async (path, body, message) => {
+    try {
+      await api.post(path, body);
+      toast(message);
+      await refresh();
+    } catch (err) {
+      toast(err.message || 'Action failed.', 'error');
+    }
+  };
+  const uploadSelfie = async (form) => {
+    const input = form?.querySelector('[data-selfie]');
+    const file = input?.files?.[0];
+    if (!file) return '';
+    const image = await readFileAsBase64(file);
+    if (image.size > 5 * 1024 * 1024) throw new Error('Selfie must be 5 MB or smaller.');
+    const uploaded = await api.post('/api/fleet/photos', {
+      fileName: image.name,
+      mimeType: image.mime,
+      data: image.data,
+      category: 'SELFIE',
+    });
+    return uploaded.url;
+  };
+  const gpsFields = (latName = 'gpsLat', lngName = 'gpsLng') => `
+    ${field({ label: 'Latitude', name: latName, type: 'number', attrs: 'step="any"', placeholder: 'Optional' })}
+    ${field({ label: 'Longitude', name: lngName, type: 'number', attrs: 'step="any"', placeholder: 'Optional' })}
+    <div class="field span-2">
+      <button type="button" class="btn btn-sm" data-current-gps data-lat="${latName}" data-lng="${lngName}">${icon('car')} Use current location</button>
+      <div class="hint">GPS is optional. Both latitude and longitude must be supplied together.</div>
+    </div>`;
+  const selfieField = () => `
+    <div class="field span-2">
+      <label>Driver selfie <span class="muted">(optional)</span></label>
+      <input class="input" type="file" accept="image/jpeg,image/png,image/webp" data-selfie />
+      <div class="hint">JPEG, PNG or WebP, up to 5 MB.</div>
+    </div>`;
+
+  const checklistHtml = (b.startChecklist || []).length
+    ? `<div class="help-block"><b>Trip-start checklist</b><ul class="check-list">${b.startChecklist.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>
+         Fuel: ${esc(b.startFuelLevel || '—')} · Condition: ${esc(b.startCondition || '—')}
+         ${b.startSelfieUrl ? ` · <a href="${esc(b.startSelfieUrl)}" target="_blank" rel="noopener noreferrer">Selfie</a>` : ''}</div>`
+    : '';
+  const updateHtml = (res.updates || []).length
+    ? `<div class="timeline">${res.updates.map((u) => `
+        <div class="timeline-item">
+          <div class="small muted">${esc(fmtDate(u.createdAt, true))} · ${esc(u.createdByName || 'Driver')}</div>
+          <b>${esc(u.type.replace(/_/g, ' '))}</b>${u.locationName ? ` · ${esc(u.locationName)}` : ''}
+          ${u.passengers != null ? ` · ${u.passengers} passenger(s)` : ''}
+          ${u.remarks ? `<div>${esc(u.remarks)}</div>` : ''}
+        </div>`).join('')}</div>`
+    : emptyState('No trip updates yet', 'Progress and prayer-pickup updates will appear here.', '', 'message');
+  const issueAccidentLinks = `
+    <div class="form-actions">
+      <a class="btn btn-sm" href="#/fleet/issues?tripId=${b.id}">${icon('alert')} Report vehicle issue</a>
+      <a class="btn btn-sm btn-danger" href="#/fleet/accidents?tripId=${b.id}">${icon('alert')} Report accident</a>
+    </div>`;
+
   ctx.view.innerHTML = `
     <div class="page-head">
       <div><h1>${esc(b.bookingNo)} ${badge(b.status, b.forwardedAt)}</h1>
@@ -372,6 +434,9 @@ export async function renderBookingDetail(ctx, options = {}) {
     ${b.transportApprovedAt ? `<div class="alert alert-success">Approved by Transport on ${esc(fmtDate(b.transportApprovedAt, true))}.</div>` : ''}
     ${b.seniorApprovedAt ? `<div class="alert alert-success">Approved by senior management on ${esc(fmtDate(b.seniorApprovedAt, true))}.${b.seniorDecisionRemarks ? ` ${esc(b.seniorDecisionRemarks)}` : ''}</div>` : ''}
     ${isAssignedToMe && b.status !== 'REJECTED' ? `<div class="alert alert-success">This trip is allotted to you. Vehicle ${esc(b.vehicleRegNo || '—')} · ${esc(fmtDate(b.startAt, true))}. The full trip details are shown below.</div>` : ''}
+    ${b.status === 'STARTED' ? `<div class="alert alert-info">Trip in progress since ${esc(fmtDate(b.startedAt, true))}. Prayer pickups recorded: <b>${b.prayerPickupCount || 0}</b>.</div>` : ''}
+    ${b.status === 'PENDING_VERIFICATION' ? `<div class="alert alert-info">Driver closed this trip at ${esc(b.endKm ?? '—')} km on ${esc(fmtDate(b.closedAt, true))}. Transport verification is required.</div>` : ''}
+    ${b.status === 'COMPLETED' && b.verifiedAt ? `<div class="alert alert-success">Closure verified by Transport on ${esc(fmtDate(b.verifiedAt, true))}${b.verificationRemarks ? `: ${esc(b.verificationRemarks)}` : ''}.</div>` : ''}
 
     <div class="two-col">
       <div>
@@ -395,7 +460,7 @@ export async function renderBookingDetail(ctx, options = {}) {
           </div>
         </div>
 
-        ${b.status === 'ASSIGNED' || b.status === 'COMPLETED' ? `
+        ${['ASSIGNED', 'STARTED', 'PENDING_VERIFICATION', 'COMPLETED'].includes(b.status) ? `
         <div class="card">
           <div class="card-head"><div><h3>${isAssignedToMe ? 'Your assigned trip' : 'Assignment'}</h3></div></div>
           <div class="form-section">
@@ -407,6 +472,8 @@ export async function renderBookingDetail(ctx, options = {}) {
               <div><div class="label muted">Odometer</div><div>${b.startKm == null && b.endKm == null ? '—' : `${esc(b.startKm ?? '—')} → ${esc(b.endKm ?? '—')} km`}</div></div>
               <div><div class="label muted">Distance</div><div>${b.distanceKm == null ? '—' : `${Number(b.distanceKm).toLocaleString('en-IN', { maximumFractionDigits: 2 })} km`}</div></div>
             </div>
+            ${checklistHtml}
+            ${b.closureRemarks ? `<div class="help-block"><b>Closure remarks:</b> ${esc(b.closureRemarks)}</div>` : ''}
             ${b.remarks ? `<div class="help-block">${esc(b.remarks)}</div>` : ''}
           </div>
         </div>` : ''}
@@ -480,21 +547,83 @@ export async function renderBookingDetail(ctx, options = {}) {
           </div>
         </div>` : ''}
 
-        ${canManage && b.status === 'ASSIGNED' ? `
+        ${b.status === 'ASSIGNED' && isTripActor ? `
         <div class="card">
-          <div class="card-head"><div><h3>Complete trip</h3></div></div>
+          <div class="card-head"><div><h3>Start trip</h3><div class="sub">Every checklist item must be completed before the trip can start</div></div></div>
           <div class="form-section">
-            <form id="fleet-complete-form" class="form-grid">
-              ${field({
-                label: 'Closing km', name: 'endKm', type: 'number', value: b.endKm ?? '',
-                attrs: 'min="0" step="0.01"',
-                hint: 'Optional. Records the distance for cost apportionment.',
-              })}
+            <form id="fleet-start-form" class="form-grid">
+              <div class="field span-2">
+                <label>Pre-start checklist <span class="req">*</span></label>
+                ${tripChecklist.map((item) => `
+                  <label class="check-line"><input type="checkbox" name="checklist" value="${esc(item.value)}" /> ${esc(item.label)}</label>`).join('')}
+              </div>
+              ${field({ label: 'Starting fuel level', name: 'fuelLevel', type: 'text', required: true, placeholder: 'e.g. 3/4 tank, 45 litres' })}
+              ${field({ label: 'Starting km', name: 'startKm', type: 'number', value: b.startKm ?? '', attrs: 'min="0" step="0.01"', required: true })}
+              ${field({ label: 'Vehicle condition', name: 'condition', type: 'textarea', span: true, required: true, placeholder: 'Note any existing damage or defect' })}
+              ${gpsFields()}
+              ${selfieField()}
               <div class="field span-2 form-actions">
-                <button class="btn btn-primary" type="submit">${icon('checkCircle')} Mark as completed</button>
+                <button class="btn btn-primary" type="submit">${icon('car')} Start trip</button>
               </div>
             </form>
           </div>
+        </div>` : ''}
+
+        ${b.status === 'STARTED' && isTripActor ? `
+        <div class="card">
+          <div class="card-head"><div><h3>During trip</h3><div class="sub">Record progress, fuel, halts, arrivals and prayer-pickup counts</div></div></div>
+          <div class="form-section">
+            <form id="fleet-update-form" class="form-grid">
+              ${field({
+                label: 'Update type', name: 'updateType', type: 'select', required: true, value: 'PROGRESS',
+                options: updateTypes.map((item) => ({ value: item.value, label: item.label })),
+              })}
+              ${field({ label: 'Location', name: 'locationName', placeholder: 'Current place or landmark' })}
+              ${gpsFields('latitude', 'longitude')}
+              ${field({ label: 'Passengers at location', name: 'passengers', type: 'number', attrs: 'min="0" max="1000"' })}
+              ${field({ label: 'Prayer pickup count', name: 'count', type: 'number', attrs: 'min="1" max="1000"', hint: 'Used only when the update type is Prayer pickup.' })}
+              ${field({ label: 'Remarks', name: 'remarks', type: 'textarea', span: true, placeholder: 'Traffic, delays, passenger needs, etc.' })}
+              <div class="field span-2 form-actions">
+                <button class="btn btn-primary" type="submit">${icon('message')} Add update</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3>Close trip</h3><div class="sub">Submits the closure to Transport for verification</div></div></div>
+          <div class="form-section">
+            <form id="fleet-close-form" class="form-grid">
+              ${field({ label: 'Closing km', name: 'endKm', type: 'number', value: b.endKm ?? '', attrs: 'min="0" step="0.01"', required: true })}
+              ${field({ label: 'Closure location', name: 'locationName', value: b.dropName || '', placeholder: 'Where the trip ended' })}
+              ${gpsFields()}
+              ${field({ label: 'Closure remarks', name: 'remarks', type: 'textarea', span: true, placeholder: 'Final note about the trip' })}
+              <div class="field span-2 form-actions">
+                <button class="btn btn-primary" type="submit">${icon('checkCircle')} Submit for verification</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3>Trip timeline</h3><div class="sub">${(res.updates || []).length} update(s)</div></div></div>
+          <div class="form-section">${updateHtml}</div>
+        </div>` : ''}
+
+        ${b.status === 'PENDING_VERIFICATION' && canManage ? `
+        <div class="card">
+          <div class="card-head"><div><h3>Verify trip closure</h3><div class="sub">Confirm the closing km and final report before completion</div></div></div>
+          <div class="form-section">
+            <div class="help-block"><b>Closed at:</b> ${esc(b.endKm ?? '—')} km · ${esc(fmtDate(b.closedAt, true))}<br />${esc(b.closureRemarks || 'No closure remarks')}</div>
+            <div class="form-actions">
+              <button class="btn btn-primary" type="button" data-verify="verify">${icon('checkCircle')} Verify &amp; complete</button>
+              <button class="btn" type="button" data-verify="return">${icon('undo')} Return for correction</button>
+            </div>
+          </div>
+        </div>` : ''}
+
+        ${['ASSIGNED', 'STARTED', 'PENDING_VERIFICATION', 'COMPLETED'].includes(b.status) && isTripActor ? `
+        <div class="card">
+          <div class="card-head"><div><h3>Report from this trip</h3></div></div>
+          <div class="form-section">${issueAccidentLinks}</div>
         </div>` : ''}
       </div>
     </div>`;
@@ -523,15 +652,123 @@ export async function renderBookingDetail(ctx, options = {}) {
     });
     if (answer) await act('reject', { remarks: answer.comments }, 'Booking request rejected.');
   });
-  ctx.view.querySelector('#fleet-complete-form')?.addEventListener('submit', async (event) => {
+  ctx.view.querySelector('#fleet-start-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const checklist = [...form.querySelectorAll('[name="checklist"]:checked')].map((input) => input.value);
+    if (checklist.length !== tripChecklist.length) {
+      toast('Complete every checklist item before starting the trip.', 'error');
+      return;
+    }
+    try {
+      const values = serializeForm(form);
+      const selfieUrl = await uploadSelfie(form);
+      await opAct(`/api/fleet/trips/${id}/start`, {
+        checklist,
+        fuelLevel: values.fuelLevel,
+        condition: values.condition,
+        startKm: values.startKm,
+        gpsLat: values.gpsLat,
+        gpsLng: values.gpsLng,
+        selfieUrl,
+        locationName: b.pickupName || b.pickupAddress,
+      }, 'Trip started. Checklist and fuel level recorded.');
+    } catch (err) {
+      toast(err.message || 'Could not start the trip.', 'error');
+    }
+  });
+
+  ctx.view.querySelector('#fleet-update-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const values = serializeForm(event.currentTarget);
+    await opAct(`/api/fleet/trips/${id}/updates`, {
+      updateType: values.updateType,
+      locationName: values.locationName,
+      latitude: values.latitude,
+      longitude: values.longitude,
+      passengers: values.passengers,
+      count: values.count,
+      remarks: values.remarks,
+    }, 'Trip update recorded.');
+  });
+
+  ctx.view.querySelector('#fleet-close-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const values = serializeForm(event.currentTarget);
     const ok = await confirmDialog({
-      title: 'Complete trip',
-      message: `Mark ${b.bookingNo} as completed?`,
-      confirmText: 'Complete trip',
+      title: 'Submit trip closure',
+      message: `Close ${b.bookingNo} at ${values.endKm} km and send it to Transport for verification?`,
+      confirmText: 'Submit closure',
     });
-    if (ok) await act('complete', { endKm: values.endKm }, 'Trip marked as completed.');
+    if (!ok) return;
+    await opAct(`/api/fleet/trips/${id}/close`, {
+      endKm: values.endKm,
+      locationName: values.locationName,
+      gpsLat: values.gpsLat,
+      gpsLng: values.gpsLng,
+      remarks: values.remarks,
+    }, 'Closure submitted for Transport verification.');
+  });
+
+  ctx.view.querySelectorAll('[data-verify]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const action = button.dataset.verify;
+      let remarks = '';
+      if (action === 'verify') {
+        const answer = await actionDialog({
+          title: 'Verify trip closure',
+          subtitle: `Booking ${b.bookingNo} · ${b.endKm ?? '—'} km`,
+          confirmText: 'Verify & complete',
+        });
+        if (!answer) return;
+        remarks = answer.comments || '';
+      } else {
+        const answer = await actionDialog({
+          title: 'Return closure for correction',
+          subtitle: `Booking ${b.bookingNo}`,
+          requireComment: true,
+          confirmText: 'Return closure',
+        });
+        if (!answer) return;
+        remarks = answer.comments;
+      }
+      try {
+        const res = await api.patch(`/api/fleet/trips/${id}/verify`, { action, remarks });
+        toast(action === 'verify' ? 'Trip verified and completed.' : 'Closure returned to the driver.');
+        if (action === 'verify') await refresh();
+        else if (res.status === 'STARTED') await refresh();
+      } catch (err) {
+        toast(err.message || 'Verification failed.', 'error');
+      }
+    });
+  });
+
+  ctx.view.querySelectorAll('[data-current-gps]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        toast('This browser does not support location access.', 'error');
+        return;
+      }
+      button.disabled = true;
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const form = button.closest('form');
+          const latField = form?.querySelector(`[name="${button.dataset.lat}"]`);
+          const lngField = form?.querySelector(`[name="${button.dataset.lng}"]`);
+          if (latField && lngField) {
+            latField.value = Number(position.coords.latitude).toFixed(6);
+            lngField.value = Number(position.coords.longitude).toFixed(6);
+            toast('Current location captured.');
+          }
+          button.disabled = false;
+        },
+        (err) => {
+          button.disabled = false;
+          toast(err.message || 'Could not capture your location.', 'error');
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+      );
+    });
   });
 
   ctx.view.querySelectorAll('[data-transport]').forEach((button) => {

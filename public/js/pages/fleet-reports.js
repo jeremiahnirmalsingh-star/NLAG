@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { navigate, withQuery } from '../router.js';
-import { esc, icon, field, emptyState } from '../ui.js';
+import { esc, icon, field, emptyState, toast } from '../ui.js';
 
 const money = (value) => `₹${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const num = (value) => Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -14,7 +14,12 @@ const REPORTS = [
   ['bookings', 'Booking Register'],
   ['usage', 'Usage by Department / Driver'],
   ['pending', 'Pending & Unmeasured Trips'],
+  ['attendance', 'Driver Attendance Register'],
+  ['issues', 'Vehicle Issue Register'],
+  ['accidents', 'Accident Register'],
+  ['audit', 'Fleet Audit History'],
 ];
+const DYNAMIC_REPORTS = new Set(['attendance', 'issues', 'accidents', 'audit']);
 
 function groupUsage(rows, key) {
   const map = new Map();
@@ -44,6 +49,9 @@ export async function renderReports(ctx) {
     api.get('/api/fleet/bookings'),
     api.get('/api/fleet/meta'),
   ]);
+  const dynamic = DYNAMIC_REPORTS.has(report)
+    ? await api.get(`/api/fleet/reports/${report}`)
+    : null;
 
   const categories = expensesRes.categories || [];
   const vehicles = expensesRes.vehicles || meta.vehicles || [];
@@ -77,7 +85,23 @@ export async function renderReports(ctx) {
     : 'All dates';
 
   let body = '';
-  if (report === 'trip-cost') {
+  if (dynamic) {
+    const rows = (dynamic.rows || []).filter((row) => {
+      const day = dateOnly(row[0]);
+      if (!day) return true;
+      if (from && day < from) return false;
+      if (to && day > to) return false;
+      return true;
+    });
+    body = `
+      <table class="rp-table">
+        <thead><tr>${(dynamic.header || []).map((cell) => `<th>${esc(cell)}</th>`).join('')}</tr></thead>
+        <tbody>${rows.length
+          ? rows.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell == null ? '' : cell)}</td>`).join('')}</tr>`).join('')
+          : `<tr><td colspan="${dynamic.header?.length || 1}">No records in this period.</td></tr>`}</tbody>
+      </table>
+      <div class="rp-section"><p class="small muted">${esc(dynamic.title || '')} · ${rows.length} record(s). Use Download CSV for the full register.</p></div>`;
+  } else if (report === 'trip-cost') {
     body = `
       <table class="rp-table">
         <thead><tr>
@@ -195,6 +219,7 @@ export async function renderReports(ctx) {
       <div><h1>Fleet Reports</h1><div class="sub">A–Z fleet registers and cost reports</div></div>
       <div class="page-actions">
         <a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a>
+        ${dynamic ? `<button class="btn" data-csv>${icon('download')} Download CSV</button>` : ''}
         <button class="btn btn-primary" data-print>${icon('file')} Print report</button>
       </div>
     </div>
@@ -236,6 +261,27 @@ export async function renderReports(ctx) {
     </div>`;
 
   ctx.view.querySelector('[data-print]')?.addEventListener('click', () => window.print());
+  ctx.view.querySelector('[data-csv]')?.addEventListener('click', () => {
+    if (!dynamic) return;
+    const csvCell = (value) => {
+      const raw = value == null ? '' : String(value);
+      return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+    };
+    const csv = [
+      (dynamic.header || []).map(csvCell).join(','),
+      ...(dynamic.rows || []).map((row) => row.map(csvCell).join(',')),
+    ].join('\r\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `fleet-${report}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast(`${dynamic.title || 'Report'} downloaded as CSV.`);
+  });
   ctx.view.querySelector('#fleet-report-filters')?.addEventListener('change', (event) => {
     const form = event.currentTarget;
     navigate(withQuery('/fleet/reports', {

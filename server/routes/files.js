@@ -29,6 +29,12 @@ const KINDS = {
     entity: 'purchase_order',
     folder: 'po-reference-photos',
   },
+  'fleet-selfie': {
+    table: 'fleet_photos',
+    permission: 'fleet.view',
+    entity: 'fleet_photo',
+    folder: 'fleet-selfies',
+  },
 };
 
 module.exports = function registerFileRoutes(router) {

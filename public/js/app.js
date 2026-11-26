@@ -23,6 +23,8 @@ import * as fleetPage from './pages/fleet.js';
 import * as fleetDashboardPage from './pages/fleet-dashboard.js';
 import * as fleetAttendancePage from './pages/fleet-attendance.js';
 import * as fleetOpsPage from './pages/fleet-ops.js';
+import * as fleetIssuesPage from './pages/fleet-issues.js';
+import * as fleetAccidentsPage from './pages/fleet-accidents.js';
 import * as fleetReportsPage from './pages/fleet-reports.js';
 
 if ('serviceWorker' in navigator) {
@@ -122,6 +124,8 @@ const NAV = [
       { path: '/fleet/attendance', label: 'Driver Attendance', icon: 'clock', permission: 'fleet.view' },
       { path: '/fleet', label: 'Vehicle Bookings', icon: 'car', permission: 'fleet.view' },
       { path: '/fleet/operations', label: 'Fleet Operations', icon: 'chart', permission: 'fleet.view' },
+      { path: '/fleet/issues', label: 'Vehicle Issues', icon: 'alert', permission: 'fleet.view' },
+      { path: '/fleet/accidents', label: 'Accident Reports', icon: 'alert', permission: 'fleet.view' },
       { path: '/fleet/reports', label: 'Fleet Reports', icon: 'file', permission: 'fleet.view' },
       { path: '/fleet/masters', label: 'Fleet Masters', icon: 'gear', permission: 'fleet.view' },
     ],
@@ -160,6 +164,8 @@ const TITLES = {
   '/fleet/dashboard': 'Fleet Dashboard',
   '/fleet/attendance': 'Driver Attendance',
   '/fleet/operations': 'Fleet Operations',
+  '/fleet/issues': 'Vehicle Issues',
+  '/fleet/accidents': 'Accident Reports',
   '/fleet/reports': 'Fleet Reports',
   '/fleet/masters': 'Fleet Masters',
   '/stocks': 'Stock Register',
@@ -734,6 +740,8 @@ async function routePage(route, ctx) {
     if (p[1] === 'dashboard') return fleetDashboardPage.render(ctx);
     if (p[1] === 'attendance') return fleetAttendancePage.renderAttendance(ctx);
     if (p[1] === 'operations') return fleetOpsPage.renderOperations(ctx);
+    if (p[1] === 'issues') return fleetIssuesPage.renderIssues(ctx);
+    if (p[1] === 'accidents') return fleetAccidentsPage.renderAccidents(ctx);
     if (p[1] === 'reports') return fleetReportsPage.renderReports(ctx);
     if (p[1] === 'masters') return fleetPage.renderMasters(ctx);
     if (p[1] === 'bookings' && p[2] === 'new') {
