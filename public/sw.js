@@ -1,7 +1,7 @@
 /* ABMDAS service worker — network first, cache as offline fallback.
  * The app is served from a local/office server, so fresh files always win;
  * the cache only exists so the shell still opens if the server is briefly down. */
-const CACHE = 'abmdas-shell-v59';
+const CACHE = 'abmdas-shell-v61';
 const SHELL = [
   '/',
   '/index.html',
@@ -14,6 +14,8 @@ const SHELL = [
   '/vendor/leaflet.js',
   '/vendor/leaflet.css',
   '/js/pages/fleet.js',
+  '/js/pages/fleet-dashboard.js',
+  '/js/pages/fleet-attendance.js',
   '/js/pages/fleet-ops.js',
   '/js/pages/fleet-reports.js',
   '/js/osm-picker.js',

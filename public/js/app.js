@@ -20,6 +20,8 @@ import * as procurementDashboardPage from './pages/procurement-dashboard.js';
 import * as assetClassesPage from './pages/asset-classes.js';
 import * as alertsPage from './pages/alerts.js';
 import * as fleetPage from './pages/fleet.js';
+import * as fleetDashboardPage from './pages/fleet-dashboard.js';
+import * as fleetAttendancePage from './pages/fleet-attendance.js';
 import * as fleetOpsPage from './pages/fleet-ops.js';
 import * as fleetReportsPage from './pages/fleet-reports.js';
 
@@ -116,6 +118,8 @@ const NAV = [
   {
     label: 'Fleet Desk',
     items: [
+      { path: '/fleet/dashboard', label: 'Fleet Dashboard', icon: 'grid', permission: 'fleet.view' },
+      { path: '/fleet/attendance', label: 'Driver Attendance', icon: 'clock', permission: 'fleet.view' },
       { path: '/fleet', label: 'Vehicle Bookings', icon: 'car', permission: 'fleet.view' },
       { path: '/fleet/operations', label: 'Fleet Operations', icon: 'chart', permission: 'fleet.view' },
       { path: '/fleet/reports', label: 'Fleet Reports', icon: 'file', permission: 'fleet.view' },
@@ -153,6 +157,8 @@ const TITLES = {
 '/asset-classes': 'Asset Classes',
 '/alerts': 'Alerts',
   '/fleet': 'Vehicle Bookings',
+  '/fleet/dashboard': 'Fleet Dashboard',
+  '/fleet/attendance': 'Driver Attendance',
   '/fleet/operations': 'Fleet Operations',
   '/fleet/reports': 'Fleet Reports',
   '/fleet/masters': 'Fleet Masters',
@@ -725,6 +731,8 @@ async function routePage(route, ctx) {
   }
   if (p[0] === 'fleet') {
     if (!guard('fleet.view')) return;
+    if (p[1] === 'dashboard') return fleetDashboardPage.render(ctx);
+    if (p[1] === 'attendance') return fleetAttendancePage.renderAttendance(ctx);
     if (p[1] === 'operations') return fleetOpsPage.renderOperations(ctx);
     if (p[1] === 'reports') return fleetReportsPage.renderReports(ctx);
     if (p[1] === 'masters') return fleetPage.renderMasters(ctx);

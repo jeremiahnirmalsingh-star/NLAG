@@ -921,7 +921,9 @@ for (const def of ROLE_DEFS) {
 }
 
 /* Fleet Desk grants are additive and repeat-safe. Administrators act as the
-   transport incharge; ordinary staff can view and raise booking requests. */
+   transport incharge; a department_head is recognised as a fleet manager only
+   when their department is Transport (see fleet.js), so other department heads
+   do not inherit vehicle/driver allotment rights. */
 const FLEET_VIEW = ['fleet.view'];
 const FLEET_STAFF = ['fleet.view', 'fleet.booking.create'];
 const FLEET_INCHARGE = [

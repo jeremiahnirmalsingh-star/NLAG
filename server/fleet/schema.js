@@ -108,7 +108,8 @@ function ensureFleetSchema(db) {
       created_at      TEXT NOT NULL,
       updated_at      TEXT NOT NULL,
       assigned_at     TEXT,
-      completed_at    TEXT
+      completed_at    TEXT,
+      forwarded_at    TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_fleet_trips_status ON fleet_trips(status);
@@ -149,6 +150,37 @@ function ensureFleetSchema(db) {
       ON fleet_vehicle_expenses(vehicle_id, expense_date DESC);
     CREATE INDEX IF NOT EXISTS idx_fleet_expenses_category
       ON fleet_vehicle_expenses(category);
+
+    /* Daily driver attendance. Worked and extra hours are stored so reports do
+       not have to re-derive them from time strings. Extra hours are hours over
+       the standard 8-hour day. */
+    CREATE TABLE IF NOT EXISTS fleet_driver_attendance (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      driver_id       INTEGER NOT NULL REFERENCES employees(id),
+      attendance_date TEXT NOT NULL,
+      check_in        TEXT NOT NULL,
+      check_out       TEXT NOT NULL,
+      hours           REAL NOT NULL DEFAULT 0,
+      extra_hours     REAL NOT NULL DEFAULT 0,
+      status          TEXT NOT NULL DEFAULT 'PENDING'
+                        CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+      remarks         TEXT NOT NULL DEFAULT '',
+      unit_id         INTEGER REFERENCES units(id),
+      created_by      INTEGER REFERENCES users(id),
+      approved_by     INTEGER REFERENCES users(id),
+      approved_at     TEXT,
+      created_at      TEXT NOT NULL,
+      updated_at      TEXT NOT NULL,
+      deleted_at      TEXT,
+      deleted_by      INTEGER REFERENCES users(id)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fleet_attendance_driver_date
+      ON fleet_driver_attendance(driver_id, attendance_date) WHERE deleted_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_fleet_attendance_unit_date
+      ON fleet_driver_attendance(unit_id, attendance_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_fleet_attendance_status
+      ON fleet_driver_attendance(status);
   `);
 
   /* Additive links to common masters. SQLite has no ADD COLUMN IF NOT EXISTS,
@@ -168,6 +200,7 @@ function ensureFleetSchema(db) {
   addColumn('fleet_trips', 'start_km', 'REAL');
   addColumn('fleet_trips', 'end_km', 'REAL');
   addColumn('fleet_trips', 'unit_id', 'INTEGER REFERENCES units(id)');
+  addColumn('fleet_trips', 'forwarded_at', 'TEXT');
   addColumn('fleet_vehicle_expenses', 'unit_id', 'INTEGER REFERENCES units(id)');
 
   /* Vehicle compliance details are stored on the vehicle master, which is the
@@ -191,6 +224,7 @@ function ensureFleetSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_fleet_areas_unit ON fleet_areas(unit_id);
     CREATE INDEX IF NOT EXISTS idx_fleet_vehicles_unit ON fleet_vehicles(unit_id);
     CREATE INDEX IF NOT EXISTS idx_fleet_trips_unit ON fleet_trips(unit_id);
+    CREATE INDEX IF NOT EXISTS idx_fleet_trips_forwarded ON fleet_trips(forwarded_at);
     CREATE INDEX IF NOT EXISTS idx_fleet_expenses_unit ON fleet_vehicle_expenses(unit_id);
     CREATE INDEX IF NOT EXISTS idx_fleet_vehicle_reg_expiry ON fleet_vehicles(registration_expiry_date);
     CREATE INDEX IF NOT EXISTS idx_fleet_vehicle_insurance_expiry ON fleet_vehicles(insurance_expiry_date);
@@ -210,6 +244,12 @@ function ensureFleetSchema(db) {
   db.prepare(
     'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
   ).run('migration.fleet_vehicle_compliance.v1', new Date().toISOString());
+  db.prepare(
+    'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
+  ).run('migration.fleet_booking_workflow.v1', new Date().toISOString());
+  db.prepare(
+    'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
+  ).run('migration.fleet_driver_attendance.v1', new Date().toISOString());
 }
 
 function ensureTripLocationColumns(db) {

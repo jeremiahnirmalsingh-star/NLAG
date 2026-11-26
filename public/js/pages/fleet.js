@@ -9,6 +9,7 @@ import {
 
 const BOOKING_STATUS = {
   PENDING: 'Pending',
+  FORWARDED: 'Forwarded',
   ASSIGNED: 'Assigned',
   REJECTED: 'Rejected',
   COMPLETED: 'Completed',
@@ -29,8 +30,9 @@ const MASTER_MODELS = {
   },
 };
 
-function badge(status) {
-  return statusBadge(status, BOOKING_STATUS[status] || status);
+function badge(status, forwardedAt) {
+  const effective = status === 'PENDING' && forwardedAt ? 'FORWARDED' : status;
+  return statusBadge(effective, BOOKING_STATUS[effective] || status);
 }
 
 function localDateTime(date) {
@@ -60,10 +62,11 @@ export async function renderBookings(ctx) {
   ]);
   const bookings = res.bookings || [];
   const p = meta.permissions || {};
+  const driverView = !p.manageBookings && !!meta.viewer?.employeeId;
 
   ctx.view.innerHTML = `
     <div class="page-head">
-      <div><h1>Vehicle Bookings</h1><div class="sub">Request, assign and track fleet trips for NLAGC departments</div></div>
+      <div><h1>Vehicle Bookings</h1><div class="sub">${driverView ? 'Trips where you are the allotted driver' : 'Request, assign and track fleet trips for NLAGC departments'}</div></div>
       <div class="page-actions">
         <a class="btn" href="#/fleet/masters">${icon('gear')} Fleet Masters</a>
         ${p.create ? `<a class="btn btn-primary" href="#/fleet/bookings/new">${icon('plus')} New Booking</a>` : ''}
@@ -72,14 +75,17 @@ export async function renderBookings(ctx) {
     <div class="card">
       ${bookings.length
         ? `<div class="table-wrap"><table class="table">
-            <thead><tr><th>Booking</th><th>Requester</th><th>Route</th><th>Trip start</th><th>Persons</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Booking</th><th>Requester</th><th>Route</th><th>Trip start</th><th>Persons</th><th>Allotment</th><th>Status</th><th></th></tr></thead>
             <tbody>${bookings.map((b) => `<tr>
               <td><a href="#/fleet/bookings/${b.id}"><b>${esc(b.bookingNo)}</b></a><div class="small muted">${esc(b.departmentName || '—')}</div></td>
               <td>${esc(b.requesterName || '—')}</td>
               <td>${esc(b.pickupName)} → ${esc(b.dropName)}<div class="small muted">${esc(b.purpose)}</div></td>
               <td>${esc(fmtDate(b.startAt, true))}</td>
               <td>${b.passengers}</td>
-              <td>${badge(b.status)}</td>
+              <td>${b.vehicleRegNo
+                ? `${esc(b.vehicleRegNo)}<div class="small muted">${esc(meta.viewer?.employeeId && b.driverId === meta.viewer.employeeId ? `You · ${b.driverName}` : (b.driverName || '—'))}</div>`
+                : '—'}</td>
+              <td>${badge(b.status, b.forwardedAt)}${meta.viewer?.employeeId && b.driverId === meta.viewer.employeeId ? '<div class="small">Assigned to you</div>' : ''}</td>
               <td class="actions"><a class="btn btn-sm btn-ghost" href="#/fleet/bookings/${b.id}" title="View booking">${icon('eye')}</a></td>
             </tr>`).join('')}</tbody>
           </table></div>`
@@ -256,6 +262,7 @@ export async function renderBookingDetail(ctx, options = {}) {
   const b = res.booking;
   const p = meta.permissions || {};
   const canManage = !!p.manageBookings;
+  const isAssignedToMe = !!meta.viewer?.employeeId && b.driverId === meta.viewer.employeeId;
   let availability = null;
   if (canManage && b.status === 'PENDING') {
     availability = (await api.get(`/api/fleet/bookings/${id}/availability`)).availability;
@@ -282,13 +289,16 @@ export async function renderBookingDetail(ctx, options = {}) {
 
   ctx.view.innerHTML = `
     <div class="page-head">
-      <div><h1>${esc(b.bookingNo)} ${badge(b.status)}</h1>
+      <div><h1>${esc(b.bookingNo)} ${badge(b.status, b.forwardedAt)}</h1>
         <div class="sub">Requested by ${esc(b.requesterName || '—')} · ${esc(b.departmentName || 'No department')}</div></div>
       <div class="page-actions">
         <a class="btn" href="#/fleet">${icon('arrowLeft')} Back to bookings</a>
         <a class="btn" href="#/documents?entityType=fleet_booking&amp;entityId=${b.id}">${icon('file')} Documents</a>
       </div>
     </div>
+
+    ${b.status === 'PENDING' && b.forwardedAt ? `<div class="alert alert-info">Forwarded to the Transport Department head/incharge on ${esc(fmtDate(b.forwardedAt, true))} for vehicle and driver allotment.</div>` : ''}
+    ${isAssignedToMe && b.status !== 'REJECTED' ? `<div class="alert alert-success">This trip is allotted to you. Vehicle ${esc(b.vehicleRegNo || '—')} · ${esc(fmtDate(b.startAt, true))}. The full trip details are shown below.</div>` : ''}
 
     <div class="two-col">
       <div>
@@ -309,7 +319,7 @@ export async function renderBookingDetail(ctx, options = {}) {
 
         ${b.status === 'ASSIGNED' || b.status === 'COMPLETED' ? `
         <div class="card">
-          <div class="card-head"><div><h3>Assignment</h3></div></div>
+          <div class="card-head"><div><h3>${isAssignedToMe ? 'Your assigned trip' : 'Assignment'}</h3></div></div>
           <div class="form-section">
             <div class="detail-grid">
               <div><div class="label muted">Vehicle</div><div>${esc(b.vehicleRegNo ? `${b.vehicleRegNo} · ${b.vehicleModel}` : '—')}</div></div>

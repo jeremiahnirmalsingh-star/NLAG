@@ -10,7 +10,7 @@
 const auth = require('../auth');
 const { HttpError } = require('../http');
 const {
-  audit, nowIso, nextSequence, badRequest, round2,
+  audit, notify, nowIso, nextSequence, badRequest, round2,
 } = require('../util');
 const { transaction, rowOr404 } = require('../procurement/shared');
 
@@ -39,6 +39,13 @@ const VEHICLE_DATE_FIELDS = [
   'pollution_cert_date', 'pollution_expiry_date',
 ];
 const VEHICLE_COMPLIANCE_FIELDS = [...Object.keys(VEHICLE_TEXT_FIELDS), ...VEHICLE_DATE_FIELDS];
+const VEHICLE_EXPIRY_FIELDS = [
+  { column: 'registration_expiry_date', label: 'Registration' },
+  { column: 'insurance_expiry_date', label: 'Insurance' },
+  { column: 'permit_expiry_date', label: 'Permit' },
+  { column: 'road_tax_expiry_date', label: 'Road tax' },
+  { column: 'pollution_expiry_date', label: 'Pollution certificate' },
+];
 const camelKey = (key) => key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 
 const MASTERS = {
@@ -143,6 +150,81 @@ function normalizeVehicleCompliance(values) {
     if (field in values) values[field] = dateField(values[field], field.replace(/_/g, ' '));
   }
   return values;
+}
+
+const STANDARD_DAY_HOURS = 8;
+
+function timeField(value, field) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(raw)) {
+    throw badRequest(`${field} must be a time in HH:MM format.`);
+  }
+  return raw;
+}
+
+function workedHours(checkIn, checkOut) {
+  const minutes = (value) => {
+    const [hours, mins] = value.split(':').map(Number);
+    return hours * 60 + mins;
+  };
+  const total = minutes(checkOut) - minutes(checkIn);
+  if (total <= 0) throw badRequest('Check-out time must be after check-in time.');
+  const hours = round2(total / 60);
+  return { hours, extraHours: round2(Math.max(0, hours - STANDARD_DAY_HOURS)) };
+}
+
+function attendanceOut(db, row) {
+  if (!row) return null;
+  const driver = db
+    .prepare('SELECT name, employee_code FROM employees WHERE id = ?')
+    .get(row.driver_id);
+  return {
+    id: row.id,
+    driverId: row.driver_id,
+    driverName: driver ? driver.name : '',
+    driverCode: driver ? driver.employee_code || '' : '',
+    date: row.attendance_date,
+    checkIn: row.check_in,
+    checkOut: row.check_out,
+    hours: round2(Number(row.hours) || 0),
+    extraHours: round2(Number(row.extra_hours) || 0),
+    status: row.status,
+    remarks: row.remarks || '',
+    unitId: row.unit_id || null,
+    approvedAt: row.approved_at || null,
+    createdAt: row.created_at,
+  };
+}
+
+function attendanceSummary(rows, today) {
+  const approved = rows.filter((row) => row.status === 'APPROVED');
+  const sum = (list, key) => round2(list.reduce((total, row) => total + (Number(row[key]) || 0), 0));
+  return {
+    records: rows.length,
+    approvedRecords: approved.length,
+    pendingRecords: rows.filter((row) => row.status === 'PENDING').length,
+    rejectedRecords: rows.filter((row) => row.status === 'REJECTED').length,
+    hours: sum(approved, 'hours'),
+    extraHours: sum(approved, 'extra_hours'),
+    todayHours: sum(approved.filter((row) => row.attendance_date === today), 'hours'),
+    todayExtraHours: sum(approved.filter((row) => row.attendance_date === today), 'extra_hours'),
+  };
+}
+
+function attendanceRowsFor(db, unitIds, driverId) {
+  const clauses = ['deleted_at IS NULL', visibleUnitClause('unit_id', unitIds)];
+  const params = [];
+  if (driverId !== null && driverId !== undefined) {
+    clauses.push('driver_id = ?');
+    params.push(driverId);
+  }
+  return db
+    .prepare(
+      `SELECT * FROM fleet_driver_attendance
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY attendance_date DESC, id DESC`
+    )
+    .all(...params);
 }
 
 /* Operating cost categories. Stored as short codes; the labels are shared
@@ -321,21 +403,6 @@ function driverRows(db, unitIds = []) {
     }));
 }
 
-function driverEmployeeId(db, user) {
-  if (!user || !user.employee_id) return null;
-  const row = db
-    .prepare(
-      `SELECT e.id
-         FROM employees e
-         JOIN employee_driver_profiles p ON p.employee_id = e.id
-        WHERE e.employee_code = ? COLLATE NOCASE
-          AND e.deleted_at IS NULL AND e.status = 'Active'
-          AND p.active = 1 AND TRIM(COALESCE(p.license_no, '')) <> ''`
-    )
-    .get(String(user.employee_id).trim());
-  return row ? row.id : null;
-}
-
 function activeDriver(db, id, unitIds = []) {
   return db
     .prepare(
@@ -346,6 +413,97 @@ function activeDriver(db, id, unitIds = []) {
           AND ${employeeUnitClause(unitIds)}`
     )
     .get(Number(id));
+}
+
+/* A user's employee code is the safest way to recognise an allotted driver.
+   It does not depend on the driving profile still being active, so historic
+   trips remain visible even if a licence record is later disabled. */
+function linkedEmployeeId(db, user) {
+  if (!user || !user.employee_id) return null;
+  const row = db
+    .prepare('SELECT id FROM employees WHERE employee_code = ? COLLATE NOCASE AND deleted_at IS NULL')
+    .get(String(user.employee_id).trim());
+  return row ? row.id : null;
+}
+
+function driverUserIds(db, employeeId) {
+  if (!employeeId) return [];
+  return db
+    .prepare(
+      `SELECT id FROM users
+        WHERE status = 'Active' AND employee_id COLLATE NOCASE =
+          (SELECT employee_code FROM employees WHERE id = ?)`
+    )
+    .all(Number(employeeId))
+    .map((row) => row.id);
+}
+
+/* The Transport Department head/incharge is recognised by department context,
+   not by a blanket grant to every department_head. Other department heads can
+   still raise and view bookings, but only Transport can allot resources. */
+function isTransportContext(db, user) {
+  if (!user) return false;
+  const values = [user.department, user.designation];
+  if (user.employee_id) {
+    const employee = db
+      .prepare('SELECT designation, department_id FROM employees WHERE employee_code = ? COLLATE NOCASE AND deleted_at IS NULL')
+      .get(String(user.employee_id).trim());
+    if (employee) {
+      values.push(employee.designation);
+      const department = employee.department_id
+        ? db.prepare('SELECT name FROM departments WHERE id = ?').get(employee.department_id)
+        : null;
+      if (department) values.push(department.name);
+    }
+  }
+  return values.filter(Boolean).join(' ').toLowerCase().includes('transport');
+}
+
+function isTransportFleetManager(db, user) {
+  if (!user || user.status !== 'Active') return false;
+  return user.role_code === 'department_head' && isTransportContext(db, user);
+}
+
+function canManageFleet(db, user) {
+  return auth.can(user, 'fleet.booking.manage') || isTransportFleetManager(db, user);
+}
+
+function requireFleetManager(ctx) {
+  if (!canManageFleet(ctx.db, ctx.user)) {
+    throw new HttpError(403, 'You do not have permission to manage fleet bookings.');
+  }
+}
+
+function transportRecipientIds(db) {
+  const ids = new Set();
+  for (const row of db.prepare("SELECT id FROM users WHERE status = 'Active'").all()) {
+    const user = auth.loadUser(db, row.id);
+    if (user && canManageFleet(db, user) && isTransportContext(db, user)) ids.add(user.id);
+  }
+  /* Include an incharge/head whose user account does not carry fleet permissions
+     yet, so a forward is never silently dropped. */
+  for (const row of db.prepare(
+    `SELECT DISTINCT u.id
+       FROM users u
+       LEFT JOIN employees e ON e.employee_code = u.employee_id COLLATE NOCASE AND e.deleted_at IS NULL
+       LEFT JOIN departments d ON d.id = e.department_id
+      WHERE u.status = 'Active'
+        AND (LOWER(COALESCE(u.designation, '')) LIKE '%incharge%'
+          OR LOWER(COALESCE(u.designation, '')) LIKE '%head%'
+          OR LOWER(COALESCE(e.designation, '')) LIKE '%incharge%'
+          OR LOWER(COALESCE(e.designation, '')) LIKE '%head%')
+        AND (LOWER(COALESCE(u.department, '')) LIKE '%transport%'
+          OR LOWER(COALESCE(d.name, '')) LIKE '%transport%'
+          OR LOWER(COALESCE(e.designation, '')) LIKE '%transport%')`
+  ).all()) ids.add(Number(row.id));
+  if (!ids.size) {
+    for (const row of db.prepare(
+      `SELECT DISTINCT u.id
+         FROM users u JOIN role_permissions rp ON rp.role_id = u.role_id
+        WHERE u.status = 'Active' AND rp.permission_key = 'fleet.booking.manage'`
+    ).all()) ids.add(Number(row.id));
+  }
+  return [...ids].filter(Boolean);
 }
 
 function normalizeLinks(values) {
@@ -496,6 +654,7 @@ function bookingOut(db, row) {
       : round2(Number(row.end_km) - Number(row.start_km)),
     remarks: row.remarks || '',
     createdAt: row.created_at,
+    forwardedAt: row.forwarded_at || null,
     assignedAt: row.assigned_at,
     completedAt: row.completed_at,
   };
@@ -685,6 +844,41 @@ function tripCostReport(db, unitIds = []) {
   return { rows, totals, unallocated, pendingTrips, vehicles, categories: EXPENSE_CATEGORIES };
 }
 
+function daysUntil(isoDate) {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const target = new Date(`${isoDate}T00:00:00Z`);
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function upcomingVehicleExpiries(db, unitIds, limit = 8) {
+  const scope = visibleUnitClause('unit_id', unitIds);
+  const select = VEHICLE_EXPIRY_FIELDS
+    .map((item) => `${item.column} AS ${camelKey(item.column)}`)
+    .join(', ');
+  const rows = db
+    .prepare(`SELECT id, reg_no, ${select} FROM fleet_vehicles WHERE deleted_at IS NULL AND ${scope}`)
+    .all();
+  const items = [];
+  for (const row of rows) {
+    for (const item of VEHICLE_EXPIRY_FIELDS) {
+      const date = row[camelKey(item.column)];
+      if (!date) continue;
+      const days = daysUntil(date);
+      if (days > 90) continue;
+      items.push({
+        id: row.id,
+        regNo: row.reg_no,
+        label: item.label,
+        date,
+        days,
+        status: days < 0 ? 'Expired' : days <= 30 ? 'Due soon' : 'Upcoming',
+      });
+    }
+  }
+  return items.sort((a, b) => a.days - b.days || a.regNo.localeCompare(b.regNo)).slice(0, limit);
+}
+
 module.exports = function registerFleetRoutes(router) {
   router.get('/api/fleet/meta', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
@@ -692,8 +886,12 @@ module.exports = function registerFleetRoutes(router) {
       permissions: {
         view: true,
         create: auth.can(ctx.user, 'fleet.booking.create'),
-        manageBookings: auth.can(ctx.user, 'fleet.booking.manage'),
+        manageBookings: canManageFleet(ctx.db, ctx.user),
         manageMasters: auth.can(ctx.user, 'fleet.master.manage'),
+      },
+      viewer: {
+        name: ctx.user.name,
+        employeeId: linkedEmployeeId(ctx.db, ctx.user),
       },
       /* Common masters: Fleet never keeps its own copy of people or departments. */
       departments: ctx.db
@@ -724,12 +922,111 @@ module.exports = function registerFleetRoutes(router) {
     };
   });
 
+  /* ---------------------------- Dashboard ---------------------------- */
+  router.get('/api/fleet/dashboard', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const admin = canManageFleet(ctx.db, ctx.user);
+    const scope = visibleUnitClause('unit_id', ctx.unitIds);
+    const driverId = admin ? null : linkedEmployeeId(ctx.db, ctx.user);
+    const viewerClause = admin ? '' : ' AND (requester_id = ? OR (? IS NOT NULL AND driver_id = ?))';
+    const viewerParams = admin ? [] : [ctx.user.id, driverId, driverId];
+
+    const statusRows = ctx.db
+      .prepare(`SELECT status, COUNT(*) AS count FROM fleet_trips WHERE ${scope}${viewerClause} GROUP BY status`)
+      .all(...viewerParams);
+    const counts = { PENDING: 0, FORWARDED: 0, ASSIGNED: 0, COMPLETED: 0, REJECTED: 0 };
+    for (const row of statusRows) counts[row.status] = Number(row.count) || 0;
+    counts.FORWARDED = Number(ctx.db
+      .prepare(`SELECT COUNT(*) AS count FROM fleet_trips WHERE ${scope}${viewerClause} AND status = 'PENDING' AND forwarded_at IS NOT NULL`)
+      .get(...viewerParams).count) || 0;
+
+    const upcoming = ctx.db
+      .prepare(
+        `SELECT * FROM fleet_trips
+          WHERE ${scope}${viewerClause} AND status IN ('PENDING','ASSIGNED') AND start_at >= ?
+          ORDER BY start_at ASC, id ASC LIMIT 8`
+      )
+      .all(...viewerParams, nowIso())
+      .map((row) => {
+        const booking = bookingOut(ctx.db, row);
+        return {
+          id: booking.id,
+          bookingNo: booking.bookingNo,
+          requesterName: booking.requesterName,
+          pickupName: booking.pickupName || booking.pickupAddress,
+          dropName: booking.dropName || booking.dropAddress,
+          startAt: booking.startAt,
+          status: booking.status,
+          forwardedAt: booking.forwardedAt,
+          vehicleRegNo: booking.vehicleRegNo,
+          driverName: booking.driverName,
+          isMine: !!driverId && booking.driverId === driverId,
+        };
+      });
+
+    const vehicleStats = ctx.db
+      .prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) AS ready,
+                SUM(CASE WHEN status = 'IN_SERVICE' THEN 1 ELSE 0 END) AS inService
+           FROM fleet_vehicles WHERE deleted_at IS NULL AND ${scope}`
+      )
+      .get();
+
+    let cost = null;
+    let expiries = [];
+    if (admin) {
+      const report = tripCostReport(ctx.db, ctx.unitIds);
+      cost = {
+        totalExpenses: round2(report.totals.totalCost + report.totals.unallocatedAmount),
+        apportionedCost: report.totals.totalCost,
+        distanceKm: report.totals.distanceKm,
+        costPerKm: report.totals.costPerKm,
+        unallocatedTrips: report.totals.pendingTrips,
+        unallocatedExpenses: report.totals.unallocatedExpenses,
+      };
+      expiries = upcomingVehicleExpiries(ctx.db, ctx.unitIds);
+    }
+
+    const today = nowIso().slice(0, 10);
+    const attendanceDbRows = attendanceRowsFor(
+      ctx.db,
+      ctx.unitIds,
+      admin ? null : (driverId ?? 0)
+    );
+    const attendance = {
+      summary: attendanceSummary(attendanceDbRows, today),
+      recent: attendanceDbRows.slice(0, 6).map((row) => attendanceOut(ctx.db, row)),
+      standardHours: STANDARD_DAY_HOURS,
+    };
+
+    return {
+      canManage: admin,
+      counts: {
+        ...counts,
+        total: statusRows.reduce((sum, row) => sum + (Number(row.count) || 0), 0),
+      },
+      fleet: {
+        vehicles: Number(vehicleStats.total) || 0,
+        activeVehicles: Number(vehicleStats.active) || 0,
+        readyVehicles: Number(vehicleStats.ready) || 0,
+        inServiceVehicles: Number(vehicleStats.inService) || 0,
+        drivers: driverRows(ctx.db, ctx.unitIds).length,
+      },
+      upcoming,
+      expiries,
+      cost,
+      attendance,
+    };
+  });
+
   /* ----------------------------- Bookings ---------------------------- */
   router.get('/api/fleet/bookings', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
-    const admin = auth.can(ctx.user, 'fleet.booking.manage');
+    const admin = canManageFleet(ctx.db, ctx.user);
     const scope = visibleUnitClause('unit_id', ctx.unitIds);
-    const driverId = admin ? null : driverEmployeeId(ctx.db, ctx.user);
+    const driverId = admin ? null : linkedEmployeeId(ctx.db, ctx.user);
     const rows = admin
       ? ctx.db.prepare(`SELECT * FROM fleet_trips WHERE ${scope} ORDER BY start_at DESC, id DESC`).all()
       : ctx.db.prepare(
@@ -747,8 +1044,8 @@ module.exports = function registerFleetRoutes(router) {
       'Booking not found.'
     );
     assertUnitVisible(ctx, row.unit_id);
-    if (!auth.can(ctx.user, 'fleet.booking.manage')) {
-      const driverId = driverEmployeeId(ctx.db, ctx.user);
+    if (!canManageFleet(ctx.db, ctx.user)) {
+      const driverId = linkedEmployeeId(ctx.db, ctx.user);
       if (row.requester_id !== ctx.user.id && !(driverId && row.driver_id === driverId)) {
         throw new HttpError(403, 'You do not have permission to view this booking.');
       }
@@ -807,24 +1104,32 @@ module.exports = function registerFleetRoutes(router) {
            booking_no, requester_id, department_id, unit_id, pickup_id, drop_id,
            pickup_name, pickup_address, pickup_lat, pickup_lng, pickup_maps_url,
            drop_name, drop_address, drop_lat, drop_lng, drop_maps_url,
-           start_at, end_at, passengers, purpose, status, created_at, updated_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?)`
+           start_at, end_at, passengers, purpose, status, created_at, updated_at, forwarded_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)`
       )
       .run(
         bookingNo, ctx.user.id, departmentId, unitId, pickupId, dropId,
         pickup.name, pickup.address, pickup.lat, pickup.lng, pickup.mapsUrl,
         drop.name, drop.address, drop.lat, drop.lng, drop.mapsUrl,
-        start.toISOString(), end.toISOString(), passengers, purpose, now, now
+        start.toISOString(), end.toISOString(), passengers, purpose, now, now, now
       );
     const id = Number(result.lastInsertRowid);
+    const forwardedTo = transportRecipientIds(ctx.db);
+    notify(
+      forwardedTo,
+      `${bookingNo} forwarded for vehicle & driver allotment`,
+      `Booking ${bookingNo} from ${pickup.name || pickup.address} to ${drop.name || drop.address} needs a vehicle and driver. Purpose: ${purpose || '—'}`,
+      `#/fleet/bookings/${id}`
+    );
     audit(ctx, 'CREATE', 'fleet_booking', id, null, {
       bookingNo, purpose, passengers, unitId, pickup: pickup.name, drop: drop.name,
+      forwardedTo,
     });
-    return { id, bookingNo, status: 'PENDING' };
+    return { id, bookingNo, status: 'PENDING', forwardedAt: now, forwardedTo: forwardedTo.length };
   });
 
   router.get('/api/fleet/bookings/:id/availability', async (ctx) => {
-    auth.guard(ctx.user, 'fleet.booking.manage');
+    requireFleetManager(ctx);
     const booking = rowOr404(
       ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(Number(ctx.params.id)),
       'Booking not found.'
@@ -834,7 +1139,7 @@ module.exports = function registerFleetRoutes(router) {
   });
 
   router.patch('/api/fleet/bookings/:id', async (ctx) => {
-    auth.guard(ctx.user, 'fleet.booking.manage');
+    requireFleetManager(ctx);
     const id = Number(ctx.params.id);
     const action = text((ctx.body || {}).action, 30).toLowerCase();
     if (!['assign', 'reject', 'complete', 'odometer'].includes(action)) throw badRequest('Unknown booking action.');
@@ -871,6 +1176,21 @@ module.exports = function registerFleetRoutes(router) {
           )
           .run(vehicleId, driverId, startKm, now, now, id);
         audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'ASSIGNED', vehicleId, driverId, startKm });
+        const link = `#/fleet/bookings/${id}`;
+        const routeText = `${booking.pickup_name || booking.pickup_address} → ${booking.drop_name || booking.drop_address}`;
+        const driverIds = driverUserIds(ctx.db, driverId);
+        notify(
+          driverIds,
+          `${booking.booking_no} assigned to you`,
+          `You are the allotted driver for ${routeText} on ${booking.start_at}. Vehicle ${vehicle.reg_no} (${vehicle.model}). Open Fleet Desk to view the full trip details.`,
+          link
+        );
+        notify(
+          [booking.requester_id].filter((userId) => !driverIds.includes(userId)),
+          `${booking.booking_no} vehicle and driver allotted`,
+          `Vehicle ${vehicle.reg_no} and driver ${driver.name} have been allotted for your trip ${routeText} on ${booking.start_at}.`,
+          link
+        );
         return;
       }
       if (action === 'reject') {
@@ -929,7 +1249,7 @@ module.exports = function registerFleetRoutes(router) {
   });
 
   router.post('/api/fleet/expenses', async (ctx) => {
-    auth.guard(ctx.user, 'fleet.booking.manage');
+    requireFleetManager(ctx);
     const values = expenseValues(ctx.db, ctx.body, ctx.unitIds);
     const now = nowIso();
     const columns = [...Object.keys(values), 'created_by', 'created_at', 'updated_at'];
@@ -945,7 +1265,7 @@ module.exports = function registerFleetRoutes(router) {
   });
 
   router.put('/api/fleet/expenses/:id', async (ctx) => {
-    auth.guard(ctx.user, 'fleet.booking.manage');
+    requireFleetManager(ctx);
     const id = Number(ctx.params.id);
     const existing = rowOr404(
       ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ? AND deleted_at IS NULL').get(id),
@@ -965,7 +1285,7 @@ module.exports = function registerFleetRoutes(router) {
   });
 
   router.delete('/api/fleet/expenses/:id', async (ctx) => {
-    auth.guard(ctx.user, 'fleet.booking.manage');
+    requireFleetManager(ctx);
     const id = Number(ctx.params.id);
     const existing = rowOr404(
       ctx.db.prepare('SELECT * FROM fleet_vehicle_expenses WHERE id = ? AND deleted_at IS NULL').get(id),
@@ -977,6 +1297,142 @@ module.exports = function registerFleetRoutes(router) {
       .prepare('UPDATE fleet_vehicle_expenses SET deleted_at = ?, deleted_by = ? WHERE id = ?')
       .run(now, ctx.user.id, id);
     audit(ctx, 'DELETE', 'fleet_expense', id, expenseOut(ctx.db, existing), { deletedAt: now });
+    return { ok: true };
+  });
+
+  /* ------------------------ Driver attendance ------------------------ */
+  router.get('/api/fleet/attendance', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const admin = canManageFleet(ctx.db, ctx.user);
+    const q = ctx.query || {};
+    let rows = attendanceRowsFor(
+      ctx.db,
+      ctx.unitIds,
+      admin ? null : (linkedEmployeeId(ctx.db, ctx.user) ?? 0)
+    );
+    if (q.from) {
+      const from = dateField(q.from, 'From date');
+      rows = rows.filter((row) => row.attendance_date >= from);
+    }
+    if (q.to) {
+      const to = dateField(q.to, 'To date');
+      rows = rows.filter((row) => row.attendance_date <= to);
+    }
+    if (q.driverId && admin) {
+      const driverId = integer(q.driverId, 'Driver', { min: 1, max: 100000000 });
+      rows = rows.filter((row) => row.driver_id === driverId);
+    }
+    if (q.status && ['PENDING', 'APPROVED', 'REJECTED'].includes(String(q.status).toUpperCase())) {
+      const status = String(q.status).toUpperCase();
+      rows = rows.filter((row) => row.status === status);
+    }
+    return {
+      canManage: admin,
+      attendance: rows.map((row) => attendanceOut(ctx.db, row)),
+      drivers: driverRows(ctx.db, ctx.unitIds),
+      summary: attendanceSummary(rows, nowIso().slice(0, 10)),
+      standardHours: STANDARD_DAY_HOURS,
+    };
+  });
+
+  router.post('/api/fleet/attendance', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const admin = canManageFleet(ctx.db, ctx.user);
+    const b = ctx.body || {};
+    const driverId = admin
+      ? integer(b.driverId, 'Driver', { required: true, min: 1, max: 100000000 })
+      : linkedEmployeeId(ctx.db, ctx.user);
+    if (!driverId) throw new HttpError(403, 'Your user is not linked to a driver record.');
+    if (!activeDriver(ctx.db, driverId, ctx.unitIds)) {
+      throw badRequest('Choose an active driver from the common employee master.');
+    }
+    const date = dateField(b.date, 'Attendance date');
+    if (!date) throw badRequest('Attendance date is required.');
+    const checkIn = timeField(b.checkIn, 'Check-in');
+    const checkOut = timeField(b.checkOut, 'Check-out');
+    const { hours, extraHours } = workedHours(checkIn, checkOut);
+    const duplicate = ctx.db
+      .prepare('SELECT id FROM fleet_driver_attendance WHERE driver_id = ? AND attendance_date = ? AND deleted_at IS NULL')
+      .get(driverId, date);
+    if (duplicate) throw badRequest('Attendance for this driver and date already exists.');
+
+    const now = nowIso();
+    const status = admin ? 'APPROVED' : 'PENDING';
+    const unitId = selectedUnitId(ctx, admin ? b.unitId : undefined);
+    const result = ctx.db
+      .prepare(
+        `INSERT INTO fleet_driver_attendance(
+           driver_id, attendance_date, check_in, check_out, hours, extra_hours,
+           status, remarks, unit_id, created_by, approved_by, approved_at,
+           created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        driverId, date, checkIn, checkOut, hours, extraHours, status,
+        text(b.remarks, 500), unitId, ctx.user.id,
+        admin ? ctx.user.id : null, admin ? now : null, now, now
+      );
+    const id = Number(result.lastInsertRowid);
+    const record = attendanceOut(ctx.db, ctx.db.prepare('SELECT * FROM fleet_driver_attendance WHERE id = ?').get(id));
+    audit(ctx, 'CREATE', 'fleet_attendance', id, null, record);
+    return { id, attendance: record };
+  });
+
+  router.patch('/api/fleet/attendance/:id', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const admin = canManageFleet(ctx.db, ctx.user);
+    const id = Number(ctx.params.id);
+    const existing = rowOr404(
+      ctx.db.prepare('SELECT * FROM fleet_driver_attendance WHERE id = ? AND deleted_at IS NULL').get(id),
+      'Attendance record not found.'
+    );
+    assertUnitVisible(ctx, existing.unit_id);
+    const viewerDriverId = linkedEmployeeId(ctx.db, ctx.user);
+    if (!admin && existing.driver_id !== viewerDriverId) {
+      throw new HttpError(403, 'You can only change your own attendance.');
+    }
+    const b = ctx.body || {};
+    const action = text(b.action || 'edit', 20).toLowerCase();
+    const now = nowIso();
+
+    if (['approve', 'reject'].includes(action)) {
+      if (!admin) throw new HttpError(403, 'Only Transport can approve attendance.');
+      const status = action === 'approve' ? 'APPROVED' : 'REJECTED';
+      ctx.db
+        .prepare('UPDATE fleet_driver_attendance SET status = ?, approved_by = ?, approved_at = ?, remarks = ?, updated_at = ? WHERE id = ?')
+        .run(status, ctx.user.id, now, text(b.remarks ?? existing.remarks, 500), now, id);
+    } else if (action === 'edit') {
+      if (!admin && existing.status !== 'PENDING') {
+        throw new HttpError(403, 'Approved attendance can only be changed by Transport.');
+      }
+      const checkIn = timeField(b.checkIn ?? existing.check_in, 'Check-in');
+      const checkOut = timeField(b.checkOut ?? existing.check_out, 'Check-out');
+      const { hours, extraHours } = workedHours(checkIn, checkOut);
+      ctx.db
+        .prepare('UPDATE fleet_driver_attendance SET check_in = ?, check_out = ?, hours = ?, extra_hours = ?, remarks = ?, updated_at = ? WHERE id = ?')
+        .run(checkIn, checkOut, hours, extraHours, text(b.remarks ?? existing.remarks, 500), now, id);
+    } else {
+      throw badRequest('Unknown attendance action.');
+    }
+    const updated = ctx.db.prepare('SELECT * FROM fleet_driver_attendance WHERE id = ?').get(id);
+    audit(ctx, 'UPDATE', 'fleet_attendance', id,
+      attendanceOut(ctx.db, existing), attendanceOut(ctx.db, updated));
+    return { ok: true, attendance: attendanceOut(ctx.db, updated) };
+  });
+
+  router.delete('/api/fleet/attendance/:id', async (ctx) => {
+    requireFleetManager(ctx);
+    const id = Number(ctx.params.id);
+    const existing = rowOr404(
+      ctx.db.prepare('SELECT * FROM fleet_driver_attendance WHERE id = ? AND deleted_at IS NULL').get(id),
+      'Attendance record not found.'
+    );
+    assertUnitVisible(ctx, existing.unit_id);
+    const now = nowIso();
+    ctx.db
+      .prepare('UPDATE fleet_driver_attendance SET deleted_at = ?, deleted_by = ? WHERE id = ?')
+      .run(now, ctx.user.id, id);
+    audit(ctx, 'DELETE', 'fleet_attendance', id, attendanceOut(ctx.db, existing), { deletedAt: now });
     return { ok: true };
   });
 
