@@ -100,11 +100,25 @@ function ensureFleetSchema(db) {
       end_at          TEXT NOT NULL,
       passengers      INTEGER NOT NULL DEFAULT 1,
       purpose         TEXT NOT NULL DEFAULT '',
+      employee_id     TEXT NOT NULL DEFAULT '',
+      mobile          TEXT NOT NULL DEFAULT '',
+      travel_category TEXT NOT NULL DEFAULT 'OTHERS',
+      journey_date    TEXT,
+      start_time      TEXT,
+      return_required INTEGER NOT NULL DEFAULT 0,
+      expected_return_at TEXT,
+      priority        TEXT NOT NULL DEFAULT 'NORMAL',
+      special_remarks TEXT NOT NULL DEFAULT '',
       status          TEXT NOT NULL DEFAULT 'PENDING'
-                        CHECK (status IN ('PENDING','ASSIGNED','REJECTED','COMPLETED')),
+                        CHECK (status IN ('PENDING','HOLD','SENIOR_APPROVAL','ASSIGNED','REJECTED','COMPLETED')),
       vehicle_id      INTEGER REFERENCES fleet_vehicles(id),
       driver_id       INTEGER REFERENCES employees(id),
       remarks         TEXT NOT NULL DEFAULT '',
+      hold_reason     TEXT NOT NULL DEFAULT '',
+      transport_approved_at TEXT,
+      senior_approval_reason TEXT NOT NULL DEFAULT '',
+      senior_approved_at TEXT,
+      senior_decision_remarks TEXT NOT NULL DEFAULT '',
       created_at      TEXT NOT NULL,
       updated_at      TEXT NOT NULL,
       assigned_at     TEXT,
@@ -201,7 +215,26 @@ function ensureFleetSchema(db) {
   addColumn('fleet_trips', 'end_km', 'REAL');
   addColumn('fleet_trips', 'unit_id', 'INTEGER REFERENCES units(id)');
   addColumn('fleet_trips', 'forwarded_at', 'TEXT');
+  addColumn('fleet_trips', 'employee_id', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'mobile', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'travel_category', "TEXT NOT NULL DEFAULT 'OTHERS'");
+  addColumn('fleet_trips', 'journey_date', 'TEXT');
+  addColumn('fleet_trips', 'start_time', 'TEXT');
+  addColumn('fleet_trips', 'return_required', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('fleet_trips', 'expected_return_at', 'TEXT');
+  addColumn('fleet_trips', 'priority', "TEXT NOT NULL DEFAULT 'NORMAL'");
+  addColumn('fleet_trips', 'special_remarks', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'hold_reason', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'transport_approved_at', 'TEXT');
+  addColumn('fleet_trips', 'senior_approval_reason', "TEXT NOT NULL DEFAULT ''");
+  addColumn('fleet_trips', 'senior_approved_at', 'TEXT');
+  addColumn('fleet_trips', 'senior_decision_remarks', "TEXT NOT NULL DEFAULT ''");
   addColumn('fleet_vehicle_expenses', 'unit_id', 'INTEGER REFERENCES units(id)');
+
+  /* Older databases have a status CHECK that only allows four states. Rebuild
+     once, preserving every row and all additive columns, so Hold and Senior
+     Approval can be stored. The marker makes this repeat-safe. */
+  ensureTripApprovalStatus(db);
 
   /* Vehicle compliance details are stored on the vehicle master, which is the
      record the transport incharge maintains. All additions are nullable or
@@ -250,6 +283,9 @@ function ensureFleetSchema(db) {
   db.prepare(
     'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
   ).run('migration.fleet_driver_attendance.v1', new Date().toISOString());
+  db.prepare(
+    'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
+  ).run('migration.fleet_trip_approvals.v1', new Date().toISOString());
 }
 
 function ensureTripLocationColumns(db) {
@@ -352,6 +388,110 @@ function ensureTripLocationColumns(db) {
   db.prepare(
     'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)'
   ).run('migration.fleet_map_locations.v1', new Date().toISOString());
+}
+
+function ensureTripApprovalStatus(db) {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fleet_trips'")
+    .get();
+  if (row && String(row.sql || '').includes('SENIOR_APPROVAL')) return;
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(`
+      CREATE TABLE fleet_trips_approval_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_no      TEXT NOT NULL UNIQUE,
+        requester_id    INTEGER NOT NULL REFERENCES users(id),
+        department_id   INTEGER REFERENCES departments(id),
+        pickup_id       INTEGER REFERENCES fleet_areas(id),
+        drop_id         INTEGER REFERENCES fleet_areas(id),
+        pickup_name     TEXT NOT NULL DEFAULT '',
+        pickup_address  TEXT NOT NULL DEFAULT '',
+        pickup_lat      REAL,
+        pickup_lng      REAL,
+        pickup_maps_url TEXT NOT NULL DEFAULT '',
+        drop_name       TEXT NOT NULL DEFAULT '',
+        drop_address    TEXT NOT NULL DEFAULT '',
+        drop_lat        REAL,
+        drop_lng        REAL,
+        drop_maps_url   TEXT NOT NULL DEFAULT '',
+        start_at        TEXT NOT NULL,
+        end_at          TEXT NOT NULL,
+        passengers      INTEGER NOT NULL DEFAULT 1,
+        purpose         TEXT NOT NULL DEFAULT '',
+        employee_id     TEXT NOT NULL DEFAULT '',
+        mobile          TEXT NOT NULL DEFAULT '',
+        travel_category TEXT NOT NULL DEFAULT 'OTHERS',
+        journey_date    TEXT,
+        start_time      TEXT,
+        return_required INTEGER NOT NULL DEFAULT 0,
+        expected_return_at TEXT,
+        priority        TEXT NOT NULL DEFAULT 'NORMAL',
+        special_remarks TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL DEFAULT 'PENDING'
+                          CHECK (status IN ('PENDING','HOLD','SENIOR_APPROVAL','ASSIGNED','REJECTED','COMPLETED')),
+        vehicle_id      INTEGER REFERENCES fleet_vehicles(id),
+        driver_id       INTEGER REFERENCES employees(id),
+        remarks         TEXT NOT NULL DEFAULT '',
+        hold_reason     TEXT NOT NULL DEFAULT '',
+        transport_approved_at TEXT,
+        senior_approval_reason TEXT NOT NULL DEFAULT '',
+        senior_approved_at TEXT,
+        senior_decision_remarks TEXT NOT NULL DEFAULT '',
+        start_km        REAL,
+        end_km          REAL,
+        unit_id         INTEGER REFERENCES units(id),
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        assigned_at     TEXT,
+        completed_at    TEXT,
+        forwarded_at    TEXT
+      );
+
+      INSERT INTO fleet_trips_approval_new (
+        id, booking_no, requester_id, department_id, pickup_id, drop_id,
+        pickup_name, pickup_address, pickup_lat, pickup_lng, pickup_maps_url,
+        drop_name, drop_address, drop_lat, drop_lng, drop_maps_url,
+        start_at, end_at, passengers, purpose, employee_id, mobile,
+        travel_category, journey_date, start_time, return_required,
+        expected_return_at, priority, special_remarks, status, vehicle_id,
+        driver_id, remarks, hold_reason, transport_approved_at,
+        senior_approval_reason, senior_approved_at, senior_decision_remarks,
+        start_km, end_km, unit_id, created_at, updated_at, assigned_at,
+        completed_at, forwarded_at
+      )
+      SELECT
+        id, booking_no, requester_id, department_id, pickup_id, drop_id,
+        pickup_name, pickup_address, pickup_lat, pickup_lng, pickup_maps_url,
+        drop_name, drop_address, drop_lat, drop_lng, drop_maps_url,
+        start_at, end_at, passengers, purpose,
+        COALESCE(employee_id, ''), COALESCE(mobile, ''),
+        COALESCE(travel_category, 'OTHERS'), journey_date, start_time,
+        COALESCE(return_required, 0), expected_return_at,
+        COALESCE(priority, 'NORMAL'), COALESCE(special_remarks, ''),
+        status, vehicle_id, driver_id, COALESCE(remarks, ''),
+        COALESCE(hold_reason, ''), transport_approved_at,
+        COALESCE(senior_approval_reason, ''), senior_approved_at,
+        COALESCE(senior_decision_remarks, ''),
+        start_km, end_km, unit_id, created_at, updated_at, assigned_at,
+        completed_at, forwarded_at
+      FROM fleet_trips;
+
+      DROP TABLE fleet_trips;
+      ALTER TABLE fleet_trips_approval_new RENAME TO fleet_trips;
+
+      CREATE INDEX IF NOT EXISTS idx_fleet_trips_status ON fleet_trips(status);
+      CREATE INDEX IF NOT EXISTS idx_fleet_trips_requester ON fleet_trips(requester_id);
+      CREATE INDEX IF NOT EXISTS idx_fleet_trips_window ON fleet_trips(start_at, end_at);
+      CREATE INDEX IF NOT EXISTS idx_fleet_trips_unit ON fleet_trips(unit_id);
+      CREATE INDEX IF NOT EXISTS idx_fleet_trips_forwarded ON fleet_trips(forwarded_at);
+    `);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 module.exports = { ensureFleetSchema };

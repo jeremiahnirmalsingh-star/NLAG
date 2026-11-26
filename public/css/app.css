@@ -246,6 +246,8 @@ form .grid-2[style*="align-items:start"] { grid-template-columns: 1fr; }
 .field > label { font-size: 13.5px; font-weight: 600; color: #36445a; }
 .field .hint { font-size: 11.5px; color: var(--muted-2); }
 .field .req { color: var(--red); margin-left: 2px; }
+.check-line { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: #36445a; font-weight: 500; }
+.check-line input { width: 16px; height: 16px; accent-color: var(--blue); }
 .qa-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .qa-row > .select { flex: 1 1 auto; min-width: 0; }
 .qa-btn {
@@ -352,7 +354,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .badge.pending, .badge.forwarded { background: var(--amber-bg); color: var(--amber); }
 .badge.approved, .badge.acknowledged, .badge.active, .badge.open { background: var(--green-bg); color: var(--green); }
 .badge.rejected, .badge.blacklisted, .badge.locked { background: var(--red-bg); color: var(--red); }
-.badge.returned, .badge.clarification { background: var(--purple-bg); color: var(--purple); }
+.badge.returned, .badge.clarification, .badge.senior-approval { background: var(--purple-bg); color: var(--purple); }
 .badge.hold { background: var(--blue-bg); color: var(--blue); }
 .badge.inactive, .badge.closed { background: #eef2f7; color: #7a8798; }
 .badge.partially-adjusted, .badge.partially-settled { background: var(--blue-bg); color: var(--blue); }

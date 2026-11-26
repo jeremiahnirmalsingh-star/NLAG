@@ -10,10 +10,27 @@ import {
 const BOOKING_STATUS = {
   PENDING: 'Pending',
   FORWARDED: 'Forwarded',
+  HOLD: 'Hold',
+  SENIOR_APPROVAL: 'Senior Approval',
   ASSIGNED: 'Assigned',
   REJECTED: 'Rejected',
   COMPLETED: 'Completed',
 };
+
+const TRAVEL_CATEGORY_OPTIONS = [
+  ['OFFICIAL_DUTY', 'Official Duty'],
+  ['SITE_VISIT', 'Site Visit'],
+  ['AIRPORT_PICKUP_DROP', 'Airport Pickup/Drop'],
+  ['PRAYER_PICKUP', 'Prayer Pickup'],
+  ['VIP_MOVEMENT', 'VIP Movement'],
+  ['MATERIAL_TRANSPORTATION', 'Material Transportation'],
+  ['OTHERS', 'Others'],
+];
+const PRIORITY_OPTIONS = [
+  ['NORMAL', 'Normal'],
+  ['URGENT', 'Urgent'],
+  ['EMERGENCY', 'Emergency'],
+];
 
 /* Departments, Employees and Users are common ABMDAS masters maintained in the
    People & Organization group. Fleet Masters only owns trip-specific data. */
@@ -62,7 +79,7 @@ export async function renderBookings(ctx) {
   ]);
   const bookings = res.bookings || [];
   const p = meta.permissions || {};
-  const driverView = !p.manageBookings && !!meta.viewer?.employeeId;
+  const driverView = !p.manageBookings && !p.seniorApprove && !!meta.viewer?.employeeId;
 
   ctx.view.innerHTML = `
     <div class="page-head">
@@ -75,11 +92,11 @@ export async function renderBookings(ctx) {
     <div class="card">
       ${bookings.length
         ? `<div class="table-wrap"><table class="table">
-            <thead><tr><th>Booking</th><th>Requester</th><th>Route</th><th>Trip start</th><th>Persons</th><th>Allotment</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Trip request</th><th>Requester</th><th>Route</th><th>Trip start</th><th>Persons</th><th>Allotment</th><th>Status</th><th></th></tr></thead>
             <tbody>${bookings.map((b) => `<tr>
               <td><a href="#/fleet/bookings/${b.id}"><b>${esc(b.bookingNo)}</b></a><div class="small muted">${esc(b.departmentName || '—')}</div></td>
               <td>${esc(b.requesterName || '—')}</td>
-              <td>${esc(b.pickupName)} → ${esc(b.dropName)}<div class="small muted">${esc(b.purpose)}</div></td>
+              <td>${esc(b.pickupName)} → ${esc(b.dropName)}<div class="small muted">${esc(b.travelCategoryLabel || b.travelCategory || '')}${b.priority && b.priority !== 'NORMAL' ? ` · ${esc(b.priorityLabel || b.priority)}` : ''}</div><div class="small muted">${esc(b.purpose)}</div></td>
               <td>${esc(fmtDate(b.startAt, true))}</td>
               <td>${b.passengers}</td>
               <td>${b.vehicleRegNo
@@ -132,6 +149,19 @@ export async function renderBookingForm(ctx) {
       <div class="hint">Type the address, choose a saved map point, or use <b>Search on map</b> to pick it from OpenStreetMap. Coordinates are optional for typed addresses.</div>
     </div>`;
 
+  const initialStart = defaultStart();
+  const journeyDefault = initialStart.slice(0, 10);
+  const timeDefault = initialStart.slice(11, 16);
+  const departmentDefault = meta.viewer?.departmentId
+    || departments.find((d) => d.name === meta.viewer?.department)?.id
+    || '';
+  const categories = meta.travelCategories
+    ? meta.travelCategories.map((item) => ({ value: item.value, label: item.label }))
+    : TRAVEL_CATEGORY_OPTIONS.map(([value, label]) => ({ value, label }));
+  const priorities = meta.priorities
+    ? meta.priorities.map((item) => ({ value: item.value, label: item.label }))
+    : PRIORITY_OPTIONS.map(([value, label]) => ({ value, label }));
+
   ctx.view.innerHTML = `
     <div class="page-head">
       <div><h1>New Vehicle Booking</h1><div class="sub">Request transport for an official trip</div></div>
@@ -140,15 +170,39 @@ export async function renderBookingForm(ctx) {
     <div class="card" style="max-width:820px">
       <form id="fleet-booking-form" class="form-section">
         <div class="form-grid">
-          ${field({ label: 'Department', name: 'departmentId', type: 'select', options: [{ value: '', label: '— Optional —' }, ...departments.filter((d) => d.active).map((d) => ({ value: d.id, label: d.name }))] })}
+          ${field({ label: 'Employee name', name: 'employeeNameDisplay', value: meta.viewer?.name || '', attrs: 'readonly' })}
+          ${field({ label: 'Employee ID', name: 'employeeCodeDisplay', value: meta.viewer?.employeeCode || '', attrs: 'readonly' })}
+          ${field({ label: 'Department', name: 'departmentId', type: 'select', value: departmentDefault, options: [{ value: '', label: '— Optional —' }, ...departments.filter((d) => d.active).map((d) => ({ value: d.id, label: d.name }))] })}
+          ${field({ label: 'Mobile', name: 'mobileDisplay', value: meta.viewer?.mobile || '', attrs: 'readonly' })}
           ${field({ label: 'Number of persons', name: 'passengers', type: 'number', value: 1, required: true, attrs: 'min="1" max="60"' })}
+          ${field({ label: 'Travel category', name: 'travelCategory', type: 'select', value: 'OFFICIAL_DUTY', options: categories, required: true })}
+          ${field({ label: 'Journey date', name: 'journeyDate', type: 'date', value: journeyDefault, required: true })}
+          ${field({ label: 'Start time', name: 'startTime', type: 'time', value: timeDefault, required: true })}
+          ${field({ label: 'Expected return date & time', name: 'expectedReturnAt', type: 'datetime-local', value: defaultEnd(), required: true })}
+          ${field({ label: 'Priority', name: 'priority', type: 'select', value: 'NORMAL', options: priorities, required: true })}
+          <div class="field">
+            <label>Return required</label>
+            <label class="check-line"><input type="checkbox" name="returnRequired" /> Yes, a return trip is required</label>
+          </div>
+          <div class="field">
+            <label>Senior approval</label>
+            <label class="check-line"><input type="checkbox" name="seniorApprovalRequired" /> Forward for senior management approval</label>
+            <div class="hint">Automatic for VIP Movement and Emergency trips.</div>
+          </div>
+          ${field({ label: 'Senior approval reason', name: 'seniorApprovalReason', type: 'select', span: true, options: [
+            { value: '', label: '— Not applicable —' },
+            { value: 'Long distance / outstation', label: 'Long distance / outstation' },
+            { value: 'Cost limit', label: 'Cost limit' },
+            { value: 'Custom scenario', label: 'Custom scenario' },
+          ] })}
           ${savedPointField('pickup', 'Saved pickup point')}
           ${savedPointField('drop', 'Saved drop point')}
           ${addressField('pickup', 'Pickup address', 'e.g. NLAGC Main Gate, Bengaluru')}
           ${addressField('drop', 'Drop address', 'e.g. Kempegowda International Airport, Bengaluru')}
-          ${field({ label: 'Trip start', name: 'startAt', type: 'datetime-local', value: defaultStart(), required: true })}
-          ${field({ label: 'Trip end', name: 'endAt', type: 'datetime-local', value: defaultEnd(), required: true })}
           ${field({ label: 'Purpose', name: 'purpose', type: 'textarea', required: true, span: true, placeholder: 'Reason for the trip' })}
+          ${field({ label: 'Special remarks', name: 'specialRemarks', type: 'textarea', span: true, placeholder: 'Passenger needs, luggage, instructions for the driver, etc.' })}
+          <input type="hidden" name="startAt" value="${esc(initialStart)}" />
+          <input type="hidden" name="endAt" value="${esc(defaultEnd())}" />
         </div>
         <div class="alert alert-danger hidden" data-err></div>
         <div class="form-actions"><button class="btn btn-primary" type="submit">${icon('send')} Submit request</button></div>
@@ -234,6 +288,8 @@ export async function renderBookingForm(ctx) {
     err.classList.add('hidden');
     const data = serializeForm(form);
     data.passengers = Number(data.passengers) || 0;
+    data.startAt = `${data.journeyDate}T${data.startTime}`;
+    data.endAt = data.expectedReturnAt;
     data.pickupName = data.pickupName || data.pickupAddress.trim();
     data.dropName = data.dropName || data.dropAddress.trim();
     if (!data.pickupName || !data.dropName) {
@@ -243,7 +299,9 @@ export async function renderBookingForm(ctx) {
     }
     try {
       const res = await api.post('/api/fleet/bookings', data);
-      toast(`Booking ${res.bookingNo} submitted.`);
+      toast(res.requiresSeniorApproval
+        ? `Booking ${res.bookingNo} sent for senior management approval.`
+        : `Booking ${res.bookingNo} submitted.`);
       navigate(`/fleet/bookings/${res.id}`);
     } catch (e2) {
       err.textContent = e2.message;
@@ -262,6 +320,8 @@ export async function renderBookingDetail(ctx, options = {}) {
   const b = res.booking;
   const p = meta.permissions || {};
   const canManage = !!p.manageBookings;
+  const canSeniorApprove = !!p.seniorApprove;
+  const isRequester = b.requesterId === meta.viewer?.id;
   const isAssignedToMe = !!meta.viewer?.employeeId && b.driverId === meta.viewer.employeeId;
   let availability = null;
   if (canManage && b.status === 'PENDING') {
@@ -286,6 +346,15 @@ export async function renderBookingDetail(ctx, options = {}) {
       toast(err.message || 'Action failed.', 'error');
     }
   };
+  const seniorAct = async (action, remarks, message) => {
+    try {
+      await api.patch(`/api/fleet/bookings/${id}/senior`, { action, remarks });
+      toast(message);
+      await refresh();
+    } catch (err) {
+      toast(err.message || 'Action failed.', 'error');
+    }
+  };
 
   ctx.view.innerHTML = `
     <div class="page-head">
@@ -298,6 +367,10 @@ export async function renderBookingDetail(ctx, options = {}) {
     </div>
 
     ${b.status === 'PENDING' && b.forwardedAt ? `<div class="alert alert-info">Forwarded to the Transport Department head/incharge on ${esc(fmtDate(b.forwardedAt, true))} for vehicle and driver allotment.</div>` : ''}
+    ${b.status === 'SENIOR_APPROVAL' ? `<div class="alert alert-info">Awaiting senior management approval${b.seniorApprovalReason ? `: ${esc(b.seniorApprovalReason)}` : ''}.</div>` : ''}
+    ${b.status === 'HOLD' ? `<div class="alert alert-danger">${b.seniorReturned ? 'Returned by senior management' : 'Held by Transport'} for clarification: ${esc(b.holdReason || '—')}${isRequester && !canManage ? `<br />Resubmit the request${b.seniorReturned ? ' for senior review' : ' to Transport'} after adding the clarification.` : ''}</div>` : ''}
+    ${b.transportApprovedAt ? `<div class="alert alert-success">Approved by Transport on ${esc(fmtDate(b.transportApprovedAt, true))}.</div>` : ''}
+    ${b.seniorApprovedAt ? `<div class="alert alert-success">Approved by senior management on ${esc(fmtDate(b.seniorApprovedAt, true))}.${b.seniorDecisionRemarks ? ` ${esc(b.seniorDecisionRemarks)}` : ''}</div>` : ''}
     ${isAssignedToMe && b.status !== 'REJECTED' ? `<div class="alert alert-success">This trip is allotted to you. Vehicle ${esc(b.vehicleRegNo || '—')} · ${esc(fmtDate(b.startAt, true))}. The full trip details are shown below.</div>` : ''}
 
     <div class="two-col">
@@ -306,12 +379,17 @@ export async function renderBookingDetail(ctx, options = {}) {
           <div class="card-head"><div><h3>Trip details</h3></div></div>
           <div class="form-section">
             <div class="detail-grid">
+              <div><div class="label muted">Employee</div><div>${esc(b.requesterName || '—')}${b.employeeId ? ` · ${esc(b.employeeId)}` : ''}</div>${b.mobile ? `<div class="small muted">${esc(b.mobile)}</div>` : ''}</div>
+              <div><div class="label muted">Travel category</div><div>${esc(b.travelCategoryLabel || b.travelCategory || '—')}</div></div>
               <div><div class="label muted">Pickup</div><div>${esc(b.pickupName || '—')}</div>${b.pickupAddress ? `<div class="small muted">${esc(b.pickupAddress)}</div>` : ''}</div>
               <div><div class="label muted">Drop</div><div>${esc(b.dropName || '—')}</div>${b.dropAddress ? `<div class="small muted">${esc(b.dropAddress)}</div>` : ''}</div>
-              <div><div class="label muted">Start</div><div>${esc(fmtDate(b.startAt, true))}</div></div>
-              <div><div class="label muted">End</div><div>${esc(fmtDate(b.endAt, true))}</div></div>
+              <div><div class="label muted">Journey date &amp; start</div><div>${esc(b.journeyDate || (b.startAt ? b.startAt.slice(0, 10) : '—'))}${b.startTime ? ` · ${esc(b.startTime)}` : ''}</div></div>
+              <div><div class="label muted">Expected return</div><div>${esc(b.expectedReturnAt ? fmtDate(b.expectedReturnAt, true) : (b.endAt ? fmtDate(b.endAt, true) : '—'))}</div><div class="small muted">${b.returnRequired ? 'Return trip required' : 'No return trip'}</div></div>
               <div><div class="label muted">Persons</div><div>${b.passengers}</div></div>
+              <div><div class="label muted">Priority</div><div>${esc(b.priorityLabel || b.priority || '—')}</div></div>
               <div><div class="label muted">Purpose</div><div>${esc(b.purpose || '—')}</div></div>
+              ${b.specialRemarks ? `<div><div class="label muted">Special remarks</div><div>${esc(b.specialRemarks)}</div></div>` : ''}
+              ${b.seniorApprovalReason ? `<div><div class="label muted">Senior approval reason</div><div>${esc(b.seniorApprovalReason)}</div></div>` : ''}
             </div>
             <a class="btn btn-sm" href="${esc(routeLink)}" target="_blank" rel="noopener noreferrer">${icon('external')} View route on Google Maps</a>
           </div>
@@ -335,6 +413,39 @@ export async function renderBookingDetail(ctx, options = {}) {
       </div>
 
       <div>
+        ${canSeniorApprove && b.status === 'SENIOR_APPROVAL' ? `
+        <div class="card">
+          <div class="card-head"><div><h3>Senior management approval</h3><div class="sub">Review the request and record a decision</div></div></div>
+          <div class="form-section">
+            ${b.seniorApprovalReason ? `<div class="alert alert-info">Reason: ${esc(b.seniorApprovalReason)}</div>` : ''}
+            <div class="form-actions">
+              <button class="btn btn-primary" type="button" data-senior="approve">${icon('check')} Approve</button>
+              <button class="btn btn-danger" type="button" data-senior="reject">${icon('x')} Reject</button>
+              <button class="btn" type="button" data-senior="return">${icon('undo')} Return for clarification</button>
+            </div>
+          </div>
+        </div>` : ''}
+
+        ${b.status === 'HOLD' && (canManage || isRequester) ? `
+        <div class="card">
+          <div class="card-head"><div><h3>Resubmit request</h3></div></div>
+          <div class="form-section">
+            <button class="btn btn-primary" type="button" data-resubmit>${icon('send')} Resubmit ${b.seniorReturned ? 'for senior review' : 'to Transport'}</button>
+          </div>
+        </div>` : ''}
+
+        ${canManage && b.status === 'PENDING' ? `
+        <div class="card">
+          <div class="card-head"><div><h3>Transport approval</h3><div class="sub">Approve, hold or forward before allotment</div></div></div>
+          <div class="form-section">
+            <div class="form-actions">
+              <button class="btn btn-primary" type="button" data-transport="approve" ${b.transportApprovedAt ? 'disabled' : ''}>${icon('check')} ${b.transportApprovedAt ? 'Approved' : 'Approve'}</button>
+              <button class="btn" type="button" data-transport="hold">${icon('clock')} Hold for clarification</button>
+              <button class="btn" type="button" data-transport="forward">${icon('send')} Forward to senior management</button>
+            </div>
+          </div>
+        </div>` : ''}
+
         ${canManage && b.status === 'PENDING' ? `
         <div class="card">
           <div class="card-head"><div><h3>Assign vehicle & driver</h3><div class="sub">Only resources free for this time slot are listed</div></div></div>
@@ -421,6 +532,63 @@ export async function renderBookingDetail(ctx, options = {}) {
       confirmText: 'Complete trip',
     });
     if (ok) await act('complete', { endKm: values.endKm }, 'Trip marked as completed.');
+  });
+
+  ctx.view.querySelectorAll('[data-transport]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const action = button.dataset.transport;
+      if (action === 'approve') {
+        await act('approve', {}, 'Booking approved by Transport.');
+        return;
+      }
+      const answer = await actionDialog({
+        title: action === 'hold' ? 'Hold for clarification' : 'Forward for senior approval',
+        subtitle: `Booking ${b.bookingNo}`,
+        requireComment: true,
+        confirmText: action === 'hold' ? 'Hold request' : 'Forward request',
+      });
+      if (!answer) return;
+      await act(
+        action === 'hold' ? 'hold' : 'forward-senior',
+        { remarks: answer.comments },
+        action === 'hold' ? 'Booking held for clarification.' : 'Booking forwarded to senior management.'
+      );
+    });
+  });
+
+  ctx.view.querySelectorAll('[data-senior]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const action = button.dataset.senior;
+      if (action === 'approve') {
+        await seniorAct('approve', '', 'Booking approved by senior management.');
+        return;
+      }
+      const answer = await actionDialog({
+        title: action === 'reject' ? 'Reject booking' : 'Return for clarification',
+        subtitle: `Booking ${b.bookingNo}`,
+        requireComment: true,
+        confirmText: action === 'reject' ? 'Reject booking' : 'Return request',
+        danger: action === 'reject',
+      });
+      if (!answer) return;
+      await seniorAct(
+        action === 'reject' ? 'reject' : 'return',
+        answer.comments,
+        action === 'reject' ? 'Booking rejected.' : 'Booking returned for clarification.'
+      );
+    });
+  });
+
+  ctx.view.querySelector('[data-resubmit]')?.addEventListener('click', async () => {
+    try {
+      const res = await api.post(`/api/fleet/bookings/${id}/resubmit`, {});
+      toast(res.status === 'SENIOR_APPROVAL'
+        ? 'Booking resubmitted for senior review.'
+        : 'Booking resubmitted to Transport.');
+      await refresh();
+    } catch (err) {
+      toast(err.message || 'Action failed.', 'error');
+    }
   });
 }
 

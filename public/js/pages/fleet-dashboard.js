@@ -4,6 +4,8 @@ import { esc, icon, num, money, fmtDate, statusBadge, emptyState } from '../ui.j
 const STATUS_LABELS = {
   PENDING: 'Pending',
   FORWARDED: 'Forwarded',
+  HOLD: 'Hold',
+  SENIOR_APPROVAL: 'Senior Approval',
   ASSIGNED: 'Assigned',
   REJECTED: 'Rejected',
   COMPLETED: 'Completed',
@@ -65,7 +67,7 @@ export async function render(ctx) {
       <td>${expiryBadge(item.days)}</td>
     </tr>`).join('');
 
-  const statusRows = ['FORWARDED', 'ASSIGNED', 'COMPLETED', 'REJECTED'].map((status) => `
+  const statusRows = ['FORWARDED', 'SENIOR_APPROVAL', 'HOLD', 'ASSIGNED', 'COMPLETED', 'REJECTED'].map((status) => `
     <tr><td>${STATUS_LABELS[status]}</td><td class="num">${num(counts[status] || 0)}</td></tr>`).join('');
 
   const myTrips = upcoming.filter((trip) => trip.isMine);
@@ -88,7 +90,7 @@ export async function render(ctx) {
     </div>
 
     <div class="grid grid-4">
-      <div class="card"><div class="kpi"><div class="chip amber">${icon('send')}</div><div><div class="label">Awaiting allotment</div><div class="value">${num(counts.PENDING || 0)}</div><div class="meta">${num(counts.FORWARDED || 0)} forwarded to Transport</div></div></div></div>
+      <div class="card"><div class="kpi"><div class="chip amber">${icon('send')}</div><div><div class="label">Awaiting allotment</div><div class="value">${num(counts.PENDING || 0)}</div><div class="meta">${num(counts.FORWARDED || 0)} forwarded · ${num(counts.SENIOR_APPROVAL || 0)} senior review · ${num(counts.HOLD || 0)} on hold</div></div></div></div>
       <div class="card"><div class="kpi"><div class="chip blue">${icon('car')}</div><div><div class="label">Assigned trips</div><div class="value">${num(counts.ASSIGNED || 0)}</div><div class="meta">${num(counts.COMPLETED || 0)} completed</div></div></div></div>
       <div class="card"><div class="kpi"><div class="chip teal">${icon('layers')}</div><div><div class="label">Vehicles ready</div><div class="value">${num(fleet.readyVehicles || 0)}</div><div class="meta">of ${num(fleet.vehicles || 0)} · ${num(fleet.inServiceVehicles || 0)} in service</div></div></div></div>
       <div class="card"><div class="kpi"><div class="chip purple">${icon('users')}</div><div><div class="label">Active drivers</div><div class="value">${num(fleet.drivers || 0)}</div><div class="meta">from the common employee master</div></div></div></div>

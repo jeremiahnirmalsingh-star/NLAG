@@ -725,6 +725,8 @@ const PERMISSIONS = [
   ['fleet.booking.create', 'Fleet Desk', 'Request a vehicle for a trip'],
   ['fleet.booking.manage', 'Fleet Desk', 'Assign vehicles and drivers, reject and complete trips'],
   ['fleet.master.manage', 'Fleet Desk', 'Maintain vehicles, drivers, departments and areas'],
+  ['fleet.senior.approve', 'Fleet Desk', 'Approve, reject or return fleet trips sent for senior management approval'],
+  ['fleet.maintenance.manage', 'Fleet Desk', 'Handle fleet vehicle issues and maintenance updates'],
 ];
 
 const ROLE_DEFS = [
@@ -897,6 +899,24 @@ const ROLE_DEFS = [
     description: 'Fleet driver with read-only access to assigned trips and reports',
     permissions: ['dashboard.view', 'fleet.view'],
   },
+  {
+    code: 'transport_head',
+    name: 'Transport Head',
+    description: 'Transport Department head/incharge responsible for fleet approvals and allotments',
+    permissions: [
+      'dashboard.view', 'employee.view', 'org.view', 'asset.view', 'report.view',
+      'fleet.view', 'fleet.booking.create', 'fleet.booking.manage', 'fleet.master.manage',
+    ],
+  },
+  {
+    code: 'maintenance_team',
+    name: 'Maintenance Team',
+    description: 'Maintenance staff who resolve reported vehicle issues and record updates',
+    permissions: [
+      'dashboard.view', 'asset.view', 'asset.maintain',
+      'fleet.view', 'fleet.maintenance.manage',
+    ],
+  },
 ];
 
 const upsertPermission = db.prepare(
@@ -941,13 +961,75 @@ const FLEET_GRANTS = {
   store_incharge: FLEET_STAFF,
   procurement_officer: FLEET_STAFF,
   asset_custodian: FLEET_STAFF,
-  senior_management: FLEET_VIEW,
+  senior_management: [...FLEET_VIEW, 'fleet.senior.approve'],
   auditor: FLEET_VIEW,
   driver: FLEET_VIEW,
+  transport_head: FLEET_INCHARGE,
+  maintenance_team: ['fleet.view', 'fleet.maintenance.manage'],
 };
 for (const [code, permissions] of Object.entries(FLEET_GRANTS)) {
   const role = findRole.get(code);
   if (role) for (const permission of permissions) grant.run(role.id, permission);
+}
+
+/* Senior approval must stay separate from Transport allotment. Earlier seeding
+   gave the Transport Head this permission; revoke it once, audited, so a return
+   for clarification cannot be decided by the same role that allots the trip. */
+const seniorSegregation = db.prepare(
+  "SELECT value FROM settings WHERE key = 'migration.fleet_senior_approval_segregation.v1'"
+).get();
+if (!seniorSegregation) {
+  const transportRole = findRole.get('transport_head');
+  const auditTime = new Date().toISOString();
+  const removed = transportRole
+    ? db.prepare(
+      "DELETE FROM role_permissions WHERE role_id = ? AND permission_key = 'fleet.senior.approve'"
+    ).run(transportRole.id).changes
+    : 0;
+  db.prepare(
+    `INSERT INTO audit_logs(user_id, action, entity_type, entity_id, old_value, new_value, created_at)
+     VALUES (?, 'SYSTEM_REPAIR', 'role_permission', ?, ?, ?, ?)`
+  ).run(
+    null, transportRole?.id || null,
+    JSON.stringify({ permissionKey: 'fleet.senior.approve', removed }),
+    JSON.stringify({ revokedFrom: 'transport_head' }),
+    auditTime
+  );
+  db.prepare(
+    `INSERT INTO settings(key, value) VALUES ('migration.fleet_senior_approval_segregation.v1', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(auditTime);
+}
+
+/* Assign the current Transport incharge to the dedicated role once. The marker
+   keeps a later administrator's role change intact on restart. */
+const transportHeadRole = findRole.get('transport_head');
+const transportHeadMigration = db.prepare("SELECT value FROM settings WHERE key = 'migration.fleet_transport_head.v1'").get();
+if (transportHeadRole && !transportHeadMigration) {
+  const transportUser = db.prepare(
+    `SELECT id, role_id FROM users
+      WHERE username = ? COLLATE NOCASE OR employee_id = ? COLLATE NOCASE
+      ORDER BY CASE WHEN username = ? COLLATE NOCASE THEN 0 ELSE 1 END LIMIT 1`
+  ).get('arun', '70443', 'arun');
+  if (transportUser) {
+    const oldRole = db.prepare('SELECT code FROM roles WHERE id = ?').get(transportUser.role_id);
+    const auditTime = new Date().toISOString();
+    db.prepare('UPDATE users SET role_id = ?, updated_at = ? WHERE id = ?')
+      .run(transportHeadRole.id, auditTime, transportUser.id);
+    db.prepare(
+      `INSERT INTO audit_logs(user_id, action, entity_type, entity_id, old_value, new_value, created_at)
+       VALUES (?, 'SYSTEM_REPAIR', 'user_role', ?, ?, ?, ?)`
+    ).run(
+      transportUser.id, transportUser.id,
+      JSON.stringify({ roleCode: oldRole?.code || null, roleId: transportUser.role_id }),
+      JSON.stringify({ roleCode: 'transport_head', roleId: transportHeadRole.id }),
+      auditTime
+    );
+    db.prepare(
+      `INSERT INTO settings(key, value) VALUES ('migration.fleet_transport_head.v1', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(auditTime);
+  }
 }
 
 /* ------------------------------------------------------------------ */

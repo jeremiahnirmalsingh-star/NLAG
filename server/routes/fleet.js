@@ -48,6 +48,36 @@ const VEHICLE_EXPIRY_FIELDS = [
 ];
 const camelKey = (key) => key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 
+const TRAVEL_CATEGORIES = [
+  { value: 'OFFICIAL_DUTY', label: 'Official Duty' },
+  { value: 'SITE_VISIT', label: 'Site Visit' },
+  { value: 'AIRPORT_PICKUP_DROP', label: 'Airport Pickup/Drop' },
+  { value: 'PRAYER_PICKUP', label: 'Prayer Pickup' },
+  { value: 'VIP_MOVEMENT', label: 'VIP Movement' },
+  { value: 'MATERIAL_TRANSPORTATION', label: 'Material Transportation' },
+  { value: 'OTHERS', label: 'Others' },
+];
+const PRIORITIES = [
+  { value: 'NORMAL', label: 'Normal' },
+  { value: 'URGENT', label: 'Urgent' },
+  { value: 'EMERGENCY', label: 'Emergency' },
+];
+
+function enumValue(value, allowed, fallback = null) {
+  const raw = text(value, 60).toUpperCase();
+  return allowed.some((item) => item.value === raw) ? raw : fallback;
+}
+
+function labelFor(value, options) {
+  return options.find((item) => item.value === value)?.label || value || '';
+}
+
+function boolValue(value) {
+  if (typeof value === 'boolean') return value;
+  const raw = String(value == null ? '' : value).trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(raw) ? 1 : 0;
+}
+
 const MASTERS = {
   mapPoints: {
     table: 'fleet_areas',
@@ -426,6 +456,24 @@ function linkedEmployeeId(db, user) {
   return row ? row.id : null;
 }
 
+function viewerProfile(db, user) {
+  const employee = user?.employee_id
+    ? db.prepare('SELECT id, employee_code, mobile, department_id FROM employees WHERE employee_code = ? COLLATE NOCASE AND deleted_at IS NULL')
+      .get(String(user.employee_id).trim())
+    : null;
+  return {
+    id: user?.id || null,
+    name: user?.name || '',
+    /* employeeId stays the linked employee record id for existing Fleet UI
+       checks; employeeCode is the human-readable employee ID shown on forms. */
+    employeeId: employee?.id || null,
+    employeeCode: user?.employee_id || employee?.employee_code || '',
+    mobile: user?.mobile || employee?.mobile || '',
+    department: user?.department || '',
+    departmentId: employee?.department_id || null,
+  };
+}
+
 function driverUserIds(db, employeeId) {
   if (!employeeId) return [];
   return db
@@ -461,11 +509,15 @@ function isTransportContext(db, user) {
 
 function isTransportFleetManager(db, user) {
   if (!user || user.status !== 'Active') return false;
-  return user.role_code === 'department_head' && isTransportContext(db, user);
+  return ['department_head', 'transport_head'].includes(user.role_code) && isTransportContext(db, user);
 }
 
 function canManageFleet(db, user) {
   return auth.can(user, 'fleet.booking.manage') || isTransportFleetManager(db, user);
+}
+
+function canViewAllFleet(db, user) {
+  return canManageFleet(db, user) || auth.can(user, 'fleet.senior.approve');
 }
 
 function requireFleetManager(ctx) {
@@ -474,11 +526,17 @@ function requireFleetManager(ctx) {
   }
 }
 
+function requireSeniorApprover(ctx) {
+  auth.guard(ctx.user, 'fleet.senior.approve');
+}
+
 function transportRecipientIds(db) {
   const ids = new Set();
   for (const row of db.prepare("SELECT id FROM users WHERE status = 'Active'").all()) {
     const user = auth.loadUser(db, row.id);
-    if (user && canManageFleet(db, user) && isTransportContext(db, user)) ids.add(user.id);
+    if (!user) continue;
+    if (user.role_code === 'transport_head') ids.add(user.id);
+    if (canManageFleet(db, user) && isTransportContext(db, user)) ids.add(user.id);
   }
   /* Include an incharge/head whose user account does not carry fleet permissions
      yet, so a forward is never silently dropped. */
@@ -501,6 +559,24 @@ function transportRecipientIds(db) {
       `SELECT DISTINCT u.id
          FROM users u JOIN role_permissions rp ON rp.role_id = u.role_id
         WHERE u.status = 'Active' AND rp.permission_key = 'fleet.booking.manage'`
+    ).all()) ids.add(Number(row.id));
+  }
+  return [...ids].filter(Boolean);
+}
+
+function seniorRecipientIds(db) {
+  const ids = new Set();
+  for (const row of db.prepare("SELECT id FROM users WHERE status = 'Active'").all()) {
+    const user = auth.loadUser(db, row.id);
+    if (user && (user.role_code === 'senior_management' || auth.can(user, 'fleet.senior.approve'))) {
+      ids.add(user.id);
+    }
+  }
+  if (!ids.size) {
+    for (const row of db.prepare(
+      `SELECT DISTINCT u.id
+         FROM users u JOIN role_permissions rp ON rp.role_id = u.role_id
+        WHERE u.status = 'Active' AND rp.permission_key = 'fleet.senior.approve'`
     ).all()) ids.add(Number(row.id));
   }
   return [...ids].filter(Boolean);
@@ -640,6 +716,23 @@ function bookingOut(db, row) {
     endAt: row.end_at,
     passengers: Number(row.passengers) || 0,
     purpose: row.purpose || '',
+    employeeId: row.employee_id || '',
+    mobile: row.mobile || '',
+    travelCategory: row.travel_category || 'OTHERS',
+    travelCategoryLabel: labelFor(row.travel_category, TRAVEL_CATEGORIES),
+    journeyDate: row.journey_date || null,
+    startTime: row.start_time || null,
+    returnRequired: !!row.return_required,
+    expectedReturnAt: row.expected_return_at || null,
+    priority: row.priority || 'NORMAL',
+    priorityLabel: labelFor(row.priority, PRIORITIES),
+    specialRemarks: row.special_remarks || '',
+    holdReason: row.hold_reason || '',
+    transportApprovedAt: row.transport_approved_at || null,
+    seniorApprovalReason: row.senior_approval_reason || '',
+    seniorApprovedAt: row.senior_approved_at || null,
+    seniorDecisionRemarks: row.senior_decision_remarks || '',
+    seniorReturned: row.status === 'HOLD' && !!row.senior_decision_remarks && !row.senior_approved_at,
     status: row.status,
     vehicleId: row.vehicle_id,
     vehicleModel: vehicle ? vehicle.model : '',
@@ -888,11 +981,15 @@ module.exports = function registerFleetRoutes(router) {
         create: auth.can(ctx.user, 'fleet.booking.create'),
         manageBookings: canManageFleet(ctx.db, ctx.user),
         manageMasters: auth.can(ctx.user, 'fleet.master.manage'),
+        seniorApprove: auth.can(ctx.user, 'fleet.senior.approve'),
+        maintenance: auth.can(ctx.user, 'fleet.maintenance.manage'),
       },
       viewer: {
-        name: ctx.user.name,
-        employeeId: linkedEmployeeId(ctx.db, ctx.user),
+        ...viewerProfile(ctx.db, ctx.user),
+        employeeRecordId: linkedEmployeeId(ctx.db, ctx.user),
       },
+      travelCategories: TRAVEL_CATEGORIES,
+      priorities: PRIORITIES,
       /* Common masters: Fleet never keeps its own copy of people or departments. */
       departments: ctx.db
         .prepare('SELECT id, name, active FROM departments ORDER BY name COLLATE NOCASE')
@@ -926,15 +1023,19 @@ module.exports = function registerFleetRoutes(router) {
   router.get('/api/fleet/dashboard', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
     const admin = canManageFleet(ctx.db, ctx.user);
+    const viewAll = canViewAllFleet(ctx.db, ctx.user);
     const scope = visibleUnitClause('unit_id', ctx.unitIds);
-    const driverId = admin ? null : linkedEmployeeId(ctx.db, ctx.user);
-    const viewerClause = admin ? '' : ' AND (requester_id = ? OR (? IS NOT NULL AND driver_id = ?))';
-    const viewerParams = admin ? [] : [ctx.user.id, driverId, driverId];
+    const driverId = viewAll ? null : linkedEmployeeId(ctx.db, ctx.user);
+    const viewerClause = viewAll ? '' : ' AND (requester_id = ? OR (? IS NOT NULL AND driver_id = ?))';
+    const viewerParams = viewAll ? [] : [ctx.user.id, driverId, driverId];
 
     const statusRows = ctx.db
       .prepare(`SELECT status, COUNT(*) AS count FROM fleet_trips WHERE ${scope}${viewerClause} GROUP BY status`)
       .all(...viewerParams);
-    const counts = { PENDING: 0, FORWARDED: 0, ASSIGNED: 0, COMPLETED: 0, REJECTED: 0 };
+    const counts = {
+      PENDING: 0, FORWARDED: 0, HOLD: 0, SENIOR_APPROVAL: 0,
+      ASSIGNED: 0, COMPLETED: 0, REJECTED: 0,
+    };
     for (const row of statusRows) counts[row.status] = Number(row.count) || 0;
     counts.FORWARDED = Number(ctx.db
       .prepare(`SELECT COUNT(*) AS count FROM fleet_trips WHERE ${scope}${viewerClause} AND status = 'PENDING' AND forwarded_at IS NOT NULL`)
@@ -943,7 +1044,7 @@ module.exports = function registerFleetRoutes(router) {
     const upcoming = ctx.db
       .prepare(
         `SELECT * FROM fleet_trips
-          WHERE ${scope}${viewerClause} AND status IN ('PENDING','ASSIGNED') AND start_at >= ?
+          WHERE ${scope}${viewerClause} AND status IN ('PENDING','SENIOR_APPROVAL','ASSIGNED') AND start_at >= ?
           ORDER BY start_at ASC, id ASC LIMIT 8`
       )
       .all(...viewerParams, nowIso())
@@ -1003,8 +1104,10 @@ module.exports = function registerFleetRoutes(router) {
 
     return {
       canManage: admin,
+      canSeniorApprove: auth.can(ctx.user, 'fleet.senior.approve'),
       counts: {
         ...counts,
+        seniorReview: counts.SENIOR_APPROVAL,
         total: statusRows.reduce((sum, row) => sum + (Number(row.count) || 0), 0),
       },
       fleet: {
@@ -1025,9 +1128,10 @@ module.exports = function registerFleetRoutes(router) {
   router.get('/api/fleet/bookings', async (ctx) => {
     auth.guard(ctx.user, 'fleet.view');
     const admin = canManageFleet(ctx.db, ctx.user);
+    const viewAll = canViewAllFleet(ctx.db, ctx.user);
     const scope = visibleUnitClause('unit_id', ctx.unitIds);
-    const driverId = admin ? null : linkedEmployeeId(ctx.db, ctx.user);
-    const rows = admin
+    const driverId = viewAll ? null : linkedEmployeeId(ctx.db, ctx.user);
+    const rows = viewAll
       ? ctx.db.prepare(`SELECT * FROM fleet_trips WHERE ${scope} ORDER BY start_at DESC, id DESC`).all()
       : ctx.db.prepare(
         `SELECT * FROM fleet_trips
@@ -1044,7 +1148,7 @@ module.exports = function registerFleetRoutes(router) {
       'Booking not found.'
     );
     assertUnitVisible(ctx, row.unit_id);
-    if (!canManageFleet(ctx.db, ctx.user)) {
+    if (!canViewAllFleet(ctx.db, ctx.user)) {
       const driverId = linkedEmployeeId(ctx.db, ctx.user);
       if (row.requester_id !== ctx.user.id && !(driverId && row.driver_id === driverId)) {
         throw new HttpError(403, 'You do not have permission to view this booking.');
@@ -1056,9 +1160,11 @@ module.exports = function registerFleetRoutes(router) {
   router.post('/api/fleet/bookings', async (ctx) => {
     auth.guard(ctx.user, 'fleet.booking.create');
     const b = ctx.body || {};
-    const startAt = text(b.startAt, 40);
-    const endAt = text(b.endAt, 40);
-    if (!startAt || !endAt) throw badRequest('Start and end date/time are required.');
+    const journeyDate = dateField(b.journeyDate, 'Journey date');
+    const startTime = timeField(b.startTime, 'Start time');
+    const startAt = journeyDate && startTime ? `${journeyDate}T${startTime}` : text(b.startAt, 40);
+    const endAt = text(b.endAt || b.expectedReturnAt, 40);
+    if (!startAt || !endAt) throw badRequest('Journey date, start time and expected return time are required.');
     const start = new Date(startAt);
     const end = new Date(endAt);
     if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
@@ -1088,15 +1194,32 @@ module.exports = function registerFleetRoutes(router) {
       }
     }
 
+    const profile = viewerProfile(ctx.db, ctx.user);
     const passengers = integer(b.passengers, 'Number of persons', { min: 1, max: 60, required: true });
-    const departmentId = integer(b.departmentId, 'Department', { min: 1, max: 1000000 });
+    const departmentId = integer(
+      b.departmentId ?? profile.departmentId, 'Department', { min: 1, max: 1000000 }
+    );
     if (departmentId && !ctx.db.prepare('SELECT id FROM departments WHERE id = ?').get(departmentId)) {
       throw badRequest('Choose a valid department from the common master.');
     }
     const purpose = text(b.purpose, 500);
     if (!purpose) throw badRequest('Purpose is required.');
 
+    const travelCategory = enumValue(b.travelCategory, TRAVEL_CATEGORIES, 'OTHERS');
+    const priority = enumValue(b.priority, PRIORITIES, 'NORMAL');
+    const returnRequired = boolValue(b.returnRequired);
+    const seniorApprovalRequired = boolValue(b.seniorApprovalRequired);
+    const seniorApprovalReason = text(b.seniorApprovalReason, 500);
+    /* VIP movement and emergency trips always need senior approval. Other
+       long-distance, outstation, cost-limit or custom cases are declared by the
+       requester through the senior-approval reason. */
+    const requiresSeniorApproval = !!(
+      seniorApprovalRequired || seniorApprovalReason
+      || travelCategory === 'VIP_MOVEMENT' || priority === 'EMERGENCY'
+    );
+    const status = requiresSeniorApproval ? 'SENIOR_APPROVAL' : 'PENDING';
     const now = nowIso();
+    const forwardedAt = requiresSeniorApproval ? null : now;
     const bookingNo = nextSequence('fleet_booking', { prefix: 'FD', year: false, pad: 4 });
     const result = ctx.db
       .prepare(
@@ -1104,28 +1227,39 @@ module.exports = function registerFleetRoutes(router) {
            booking_no, requester_id, department_id, unit_id, pickup_id, drop_id,
            pickup_name, pickup_address, pickup_lat, pickup_lng, pickup_maps_url,
            drop_name, drop_address, drop_lat, drop_lng, drop_maps_url,
-           start_at, end_at, passengers, purpose, status, created_at, updated_at, forwarded_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)`
+           start_at, end_at, passengers, purpose, employee_id, mobile,
+           travel_category, journey_date, start_time, return_required,
+           expected_return_at, priority, special_remarks, status,
+           senior_approval_reason, created_at, updated_at, forwarded_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .run(
         bookingNo, ctx.user.id, departmentId, unitId, pickupId, dropId,
         pickup.name, pickup.address, pickup.lat, pickup.lng, pickup.mapsUrl,
         drop.name, drop.address, drop.lat, drop.lng, drop.mapsUrl,
-        start.toISOString(), end.toISOString(), passengers, purpose, now, now, now
+        start.toISOString(), end.toISOString(), passengers, purpose,
+        profile.employeeCode, profile.mobile, travelCategory, journeyDate, startTime,
+        returnRequired, end.toISOString(), priority, text(b.specialRemarks, 1000),
+        status, seniorApprovalReason, now, now, forwardedAt
       );
     const id = Number(result.lastInsertRowid);
-    const forwardedTo = transportRecipientIds(ctx.db);
+    const link = `#/fleet/bookings/${id}`;
+    const recipients = requiresSeniorApproval ? seniorRecipientIds(ctx.db) : transportRecipientIds(ctx.db);
     notify(
-      forwardedTo,
-      `${bookingNo} forwarded for vehicle & driver allotment`,
-      `Booking ${bookingNo} from ${pickup.name || pickup.address} to ${drop.name || drop.address} needs a vehicle and driver. Purpose: ${purpose || '—'}`,
-      `#/fleet/bookings/${id}`
+      recipients,
+      requiresSeniorApproval ? `${bookingNo} requires senior management approval` : `${bookingNo} forwarded for vehicle & driver allotment`,
+      `Booking ${bookingNo} from ${pickup.name || pickup.address} to ${drop.name || drop.address} needs review. Requester: ${profile.name}${profile.employeeCode ? ` (${profile.employeeCode})` : ''}. Purpose: ${purpose || '—'}${seniorApprovalReason ? ` Senior approval reason: ${seniorApprovalReason}.` : ''}`,
+      link
     );
     audit(ctx, 'CREATE', 'fleet_booking', id, null, {
-      bookingNo, purpose, passengers, unitId, pickup: pickup.name, drop: drop.name,
-      forwardedTo,
+      bookingNo, purpose, passengers, unitId, travelCategory, priority,
+      returnRequired, requiresSeniorApproval, pickup: pickup.name, drop: drop.name,
+      recipients,
     });
-    return { id, bookingNo, status: 'PENDING', forwardedAt: now, forwardedTo: forwardedTo.length };
+    return {
+      id, bookingNo, status, forwardedAt, recipients: recipients.length,
+      requiresSeniorApproval,
+    };
   });
 
   router.get('/api/fleet/bookings/:id/availability', async (ctx) => {
@@ -1142,7 +1276,9 @@ module.exports = function registerFleetRoutes(router) {
     requireFleetManager(ctx);
     const id = Number(ctx.params.id);
     const action = text((ctx.body || {}).action, 30).toLowerCase();
-    if (!['assign', 'reject', 'complete', 'odometer'].includes(action)) throw badRequest('Unknown booking action.');
+    if (!['approve', 'hold', 'forward-senior', 'assign', 'reject', 'complete', 'odometer'].includes(action)) {
+      throw badRequest('Unknown booking action.');
+    }
 
     transaction(ctx.db, () => {
       const booking = rowOr404(
@@ -1151,6 +1287,60 @@ module.exports = function registerFleetRoutes(router) {
       );
       assertUnitVisible(ctx, booking.unit_id);
       const now = nowIso();
+      const link = `#/fleet/bookings/${id}`;
+      const requester = ctx.db.prepare('SELECT name, mobile, employee_id FROM users WHERE id = ?').get(booking.requester_id);
+
+      if (action === 'approve') {
+        if (booking.status !== 'PENDING') throw badRequest('Only pending requests can be approved.');
+        ctx.db
+          .prepare('UPDATE fleet_trips SET transport_approved_at = ?, updated_at = ? WHERE id = ?')
+          .run(now, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id,
+          { transportApprovedAt: booking.transport_approved_at }, { transportApprovedAt: now });
+        notify(
+          [booking.requester_id],
+          `${booking.booking_no} approved by Transport`,
+          `Transport has approved your request from ${booking.pickup_name || booking.pickup_address} to ${booking.drop_name || booking.drop_address}. Vehicle and driver allotment will follow.`,
+          link
+        );
+        return;
+      }
+
+      if (action === 'hold') {
+        if (booking.status !== 'PENDING') throw badRequest('Only pending requests can be held.');
+        const reason = text((ctx.body || {}).remarks, 500);
+        if (!reason) throw badRequest('Enter the clarification required from the requester.');
+        ctx.db
+          .prepare("UPDATE fleet_trips SET status = 'HOLD', hold_reason = ?, updated_at = ? WHERE id = ?")
+          .run(reason, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'HOLD', holdReason: reason });
+        notify(
+          [booking.requester_id],
+          `${booking.booking_no} held for clarification`,
+          `Transport has held your booking for clarification: ${reason}`,
+          link
+        );
+        return;
+      }
+
+      if (action === 'forward-senior') {
+        if (booking.status !== 'PENDING') throw badRequest('Only pending requests can go to senior management.');
+        const reason = text((ctx.body || {}).remarks, 500);
+        if (!reason) throw badRequest('Enter the reason for senior management approval.');
+        ctx.db
+          .prepare("UPDATE fleet_trips SET status = 'SENIOR_APPROVAL', senior_approval_reason = ?, updated_at = ? WHERE id = ?")
+          .run(reason, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id,
+          { status: booking.status }, { status: 'SENIOR_APPROVAL', seniorApprovalReason: reason });
+        notify(
+          seniorRecipientIds(ctx.db),
+          `${booking.booking_no} requires senior approval`,
+          `Transport has forwarded booking ${booking.booking_no} for senior management approval. Reason: ${reason}`,
+          link
+        );
+        return;
+      }
+
       if (action === 'assign') {
         if (booking.status !== 'PENDING') throw badRequest('Only pending requests can be assigned.');
         const vehicleId = integer((ctx.body || {}).vehicleId, 'Vehicle', { required: true });
@@ -1171,34 +1361,46 @@ module.exports = function registerFleetRoutes(router) {
         ctx.db
           .prepare(
             `UPDATE fleet_trips
-                SET status = 'ASSIGNED', vehicle_id = ?, driver_id = ?, start_km = ?, assigned_at = ?, updated_at = ?
+                SET status = 'ASSIGNED', vehicle_id = ?, driver_id = ?, start_km = ?,
+                    transport_approved_at = COALESCE(transport_approved_at, ?),
+                    assigned_at = ?, updated_at = ?
               WHERE id = ?`
           )
-          .run(vehicleId, driverId, startKm, now, now, id);
+          .run(vehicleId, driverId, startKm, now, now, now, id);
         audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'ASSIGNED', vehicleId, driverId, startKm });
-        const link = `#/fleet/bookings/${id}`;
         const routeText = `${booking.pickup_name || booking.pickup_address} → ${booking.drop_name || booking.drop_address}`;
         const driverIds = driverUserIds(ctx.db, driverId);
+        const requesterText = requester
+          ? `${requester.name}${requester.employee_id ? ` (${requester.employee_id})` : ''}${requester.mobile ? `, ${requester.mobile}` : ''}`
+          : '—';
+        const instructions = booking.special_remarks ? ` Special instructions: ${booking.special_remarks}` : '';
         notify(
           driverIds,
           `${booking.booking_no} assigned to you`,
-          `You are the allotted driver for ${routeText} on ${booking.start_at}. Vehicle ${vehicle.reg_no} (${vehicle.model}). Open Fleet Desk to view the full trip details.`,
+          `You are the allotted driver for ${routeText}. Reporting time ${booking.start_at}. Vehicle ${vehicle.reg_no} (${vehicle.model}). Passengers ${booking.passengers}. Requester ${requesterText}.${instructions} Open Fleet Desk for full trip details.`,
           link
         );
         notify(
           [booking.requester_id].filter((userId) => !driverIds.includes(userId)),
           `${booking.booking_no} vehicle and driver allotted`,
-          `Vehicle ${vehicle.reg_no} and driver ${driver.name} have been allotted for your trip ${routeText} on ${booking.start_at}.`,
+          `Vehicle ${vehicle.reg_no} and driver ${driver.name} (${driver.employee_code || ''}) have been allotted for your trip ${routeText}. Reporting time ${booking.start_at}. Contact: ${requester.mobile || '—'}.`,
           link
         );
         return;
       }
       if (action === 'reject') {
         if (booking.status !== 'PENDING') throw badRequest('Only pending requests can be rejected.');
+        const reason = text((ctx.body || {}).remarks, 500) || 'Rejected by transport incharge';
         ctx.db
           .prepare("UPDATE fleet_trips SET status = 'REJECTED', remarks = ?, updated_at = ? WHERE id = ?")
-          .run(text((ctx.body || {}).remarks, 500) || 'Rejected by transport incharge', now, id);
-        audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'REJECTED' });
+          .run(reason, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'REJECTED', reason });
+        notify(
+          [booking.requester_id],
+          `${booking.booking_no} rejected by Transport`,
+          `Transport rejected your booking request. Reason: ${reason}`,
+          link
+        );
         return;
       }
       if (action === 'odometer') {
@@ -1231,6 +1433,107 @@ module.exports = function registerFleetRoutes(router) {
       audit(ctx, 'UPDATE', 'fleet_booking', id, { status: booking.status }, { status: 'COMPLETED', endKm });
     });
     return { ok: true };
+  });
+
+  router.patch('/api/fleet/bookings/:id/senior', async (ctx) => {
+    requireSeniorApprover(ctx);
+    const id = Number(ctx.params.id);
+    const action = text((ctx.body || {}).action, 30).toLowerCase();
+    if (!['approve', 'reject', 'return'].includes(action)) throw badRequest('Unknown senior approval action.');
+
+    transaction(ctx.db, () => {
+      const booking = rowOr404(
+        ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id),
+        'Booking not found.'
+      );
+      assertUnitVisible(ctx, booking.unit_id);
+      if (booking.status !== 'SENIOR_APPROVAL') {
+        throw badRequest('Only bookings awaiting senior approval can be reviewed.');
+      }
+      const now = nowIso();
+      const remarks = text((ctx.body || {}).remarks, 500);
+      const link = `#/fleet/bookings/${id}`;
+
+      if (action === 'approve') {
+        ctx.db
+          .prepare(
+            `UPDATE fleet_trips
+                SET status = 'PENDING', senior_approved_at = ?, senior_decision_remarks = ?,
+                    forwarded_at = COALESCE(forwarded_at, ?), updated_at = ?
+              WHERE id = ?`
+          )
+          .run(now, remarks, now, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id,
+          { status: booking.status }, { status: 'PENDING', seniorApprovedAt: now, seniorDecisionRemarks: remarks });
+        notify(
+          [...transportRecipientIds(ctx.db), booking.requester_id],
+          `${booking.booking_no} approved by senior management`,
+          `Senior management approved ${booking.booking_no}. It is now with Transport for vehicle and driver allotment.${remarks ? ` Note: ${remarks}` : ''}`,
+          link
+        );
+        return;
+      }
+
+      if (action === 'reject') {
+        if (!remarks) throw badRequest('Enter a reason for rejecting this booking.');
+        ctx.db
+          .prepare("UPDATE fleet_trips SET status = 'REJECTED', remarks = ?, senior_decision_remarks = ?, updated_at = ? WHERE id = ?")
+          .run(remarks, remarks, now, id);
+        audit(ctx, 'UPDATE', 'fleet_booking', id,
+          { status: booking.status }, { status: 'REJECTED', seniorDecisionRemarks: remarks });
+        notify(
+          [booking.requester_id],
+          `${booking.booking_no} rejected by senior management`,
+          `Senior management rejected your request. Reason: ${remarks}`,
+          link
+        );
+        return;
+      }
+
+      if (!remarks) throw badRequest('Enter the clarification required from the requester.');
+      ctx.db
+        .prepare("UPDATE fleet_trips SET status = 'HOLD', hold_reason = ?, senior_decision_remarks = ?, updated_at = ? WHERE id = ?")
+        .run(remarks, remarks, now, id);
+      audit(ctx, 'UPDATE', 'fleet_booking', id,
+        { status: booking.status }, { status: 'HOLD', holdReason: remarks });
+      notify(
+        [booking.requester_id],
+        `${booking.booking_no} returned for clarification`,
+        `Senior management has returned your request for clarification: ${remarks}`,
+        link
+      );
+    });
+    return { ok: true };
+  });
+
+  router.post('/api/fleet/bookings/:id/resubmit', async (ctx) => {
+    auth.guard(ctx.user, 'fleet.view');
+    const id = Number(ctx.params.id);
+    const booking = rowOr404(
+      ctx.db.prepare('SELECT * FROM fleet_trips WHERE id = ?').get(id),
+      'Booking not found.'
+    );
+    assertUnitVisible(ctx, booking.unit_id);
+    if (!canManageFleet(ctx.db, ctx.user) && booking.requester_id !== ctx.user.id) {
+      throw new HttpError(403, 'Only the requester or Transport can resubmit this booking.');
+    }
+    if (booking.status !== 'HOLD') throw badRequest('Only held bookings can be resubmitted.');
+    const returnedBySenior = !!booking.senior_decision_remarks && !booking.senior_approved_at;
+    const nextStatus = returnedBySenior ? 'SENIOR_APPROVAL' : 'PENDING';
+    const now = nowIso();
+    ctx.db
+      .prepare('UPDATE fleet_trips SET status = ?, hold_reason = ?, forwarded_at = ?, updated_at = ? WHERE id = ?')
+      .run(nextStatus, '', returnedBySenior ? null : now, now, id);
+    audit(ctx, 'UPDATE', 'fleet_booking', id,
+      { status: booking.status },
+      { status: nextStatus, resubmitted: true, returnedTo: returnedBySenior ? 'senior_management' : 'transport' });
+    notify(
+      returnedBySenior ? seniorRecipientIds(ctx.db) : transportRecipientIds(ctx.db),
+      `${booking.booking_no} resubmitted for ${returnedBySenior ? 'senior review' : 'allotment'}`,
+      `Booking ${booking.booking_no} was resubmitted with the requested clarification.`,
+      `#/fleet/bookings/${id}`
+    );
+    return { ok: true, status: nextStatus };
   });
 
   /* ---------------------------- Operations --------------------------- */
