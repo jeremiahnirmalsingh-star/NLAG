@@ -10,7 +10,7 @@ Browser
   └── https://abmdas.vercel.app/api/...   → Vercel rewrite
                                               │
                                               ▼
-                          https://abmdas-api.tail8b0493.ts.net/api/...
+                          https://nlcc-projects.taild9d340.ts.net/api/...
                                               │
                                               ▼
                           Tailscale Funnel → 127.0.0.1:3000
@@ -22,7 +22,7 @@ Browser
 
 - **Frontend:** Vercel project `abmdas`, branch `main`, Output Directory `public`.
 - **Frontend URL:** <https://abmdas.vercel.app>
-- **Backend public URL:** <https://abmdas-api.tail8b0493.ts.net>
+- **Backend public URL:** <https://nlcc-projects.taild9d340.ts.net>
 - **Backend process:** local Node server started by `C:\abmdas-data\abmdas-supervisor.ps1`.
 - **Persistence:** the existing SQLite database and uploads stay at `C:\abmdas-data`; nothing application-related is stored on Vercel's ephemeral filesystem.
 - **Tunnel:** Tailscale Funnel provides a free, stable public HTTPS hostname and forwards port 443 to the local API on port 3000.
@@ -55,7 +55,7 @@ Vercel is used **only** for `public/`. Do not commit or upload `abmdas.db` to Ve
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://abmdas-api.tail8b0493.ts.net/api/:path*"
+      "destination": "https://nlcc-projects.taild9d340.ts.net/api/:path*"
     }
   ]
 }
@@ -69,7 +69,7 @@ Set in `C:\abmdas-data\abmdas-supervisor.ps1` before `Start-Process`:
 
 ```powershell
 $env:ABMDAS_DATA_DIR = $dataDir                 # C:\abmdas-data
-$env:ABMDAS_ALLOWED_ORIGINS = 'https://abmdas.vercel.app,https://abmdas-api.tail8b0493.ts.net'
+$env:ABMDAS_ALLOWED_ORIGINS = 'https://abmdas.vercel.app,https://nlcc-projects.taild9d340.ts.net'
 $env:PORT = "3000"
 ```
 
@@ -96,7 +96,7 @@ Check it with:
 Expected handler:
 
 ```text
-https://abmdas-api.tail8b0493.ts.net/
+https://nlcc-projects.taild9d340.ts.net/
 |-- proxy http://127.0.0.1:3000
 ```
 
@@ -158,7 +158,7 @@ These checks were run against the live deployment:
 |---|---|---|
 | `Cannot reach the server` on the online URL | Local backend or Tailscale is offline | Check `http://127.0.0.1:3000/api/health`, `tailscale status`, and `tailscale funnel status` |
 | `403 Cross-origin request blocked` | Backend running old `server/index.js`, or `ABMDAS_ALLOWED_ORIGINS` missing | Restart the supervisor with the current script and allowlist |
-| Health works on Tailscale URL but not Vercel URL | `vercel.json` rewrite points at the wrong host | Confirm destination is `https://abmdas-api.tail8b0493.ts.net/api/:path*`, then push/redeploy |
+| Health works on Tailscale URL but not Vercel URL | `vercel.json` rewrite points at the wrong host | Confirm destination is `https://nlcc-projects.taild9d340.ts.net/api/:path*`, then push/redeploy |
 | Data resets | `ABMDAS_DATA_DIR` not set to `C:\abmdas-data` | Restore the env var in the supervisor and restart |
 | Blank page or static 404 | Vercel Output Directory not `public` | Set Output Directory to `public` and redeploy |
 | Stale UI after a release | Service worker cache | Keep cache name `abmdas-shell-v62`; hard-refresh once if needed |

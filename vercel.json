@@ -4,7 +4,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://abmdas-api.tail8b0493.ts.net/api/:path*"
+      "destination": "https://nlcc-projects.taild9d340.ts.net/api/:path*"
     }
   ],
   "headers": [
