@@ -43,7 +43,7 @@ const MASTERS = {
 const COLUMN_MAP = {
   name: 'name', address: 'address', address_id: 'address_id', lat: 'lat', lng: 'lng',
   maps_url: 'maps_url', reg_no: 'reg_no', model: 'model', seats: 'seats',
-  status: 'status', asset_id: 'asset_id', active: 'active',
+  status: 'status', asset_id: 'asset_id', active: 'active', unit_id: 'unit_id',
 };
 
 /* The API speaks camelCase everywhere else; accept both spellings so a master
