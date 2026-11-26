@@ -279,6 +279,6 @@ export async function renderAttendance(ctx) {
   });
 }
 
-function actionsInRows(rows) {
-  return rows.some((row) => row.includes('class="actions"'));
+function actionsInRows(rowHtml) {
+  return String(rowHtml).includes('class="actions"');
 }
