@@ -697,6 +697,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rp-photo-strip figure { margin: 0; text-align: center; }
 .rp-photo-strip img { width: 100%; height: 18mm; object-fit: contain; border: 1px solid #b9c6d4; display: block; }
 .rp-photo-strip figcaption { font-size: 8px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-item-photo-cell { text-align: center; vertical-align: middle; }
+.rp-item-photo { width: 100%; max-width: 24mm; height: 16mm; object-fit: contain; border: 1px solid #b9c6d4; display: block; margin: 0 auto; }
 .po-print-photo-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #123c69; padding: 6px 10px; border: 1px solid #c9d4e0; border-radius: 6px; background: #f8fafc; }
 
 /* ---------- Responsive ---------- */

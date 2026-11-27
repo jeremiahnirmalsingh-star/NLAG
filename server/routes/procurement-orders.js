@@ -391,7 +391,7 @@ function photoMagicMatches(buffer, mime) {
 function poPhotos(db, poId) {
   return db
     .prepare(
-      `SELECT id, file_name, stored_name, mime_type, size, caption, uploaded_at
+      `SELECT id, po_id, po_item_id, file_name, stored_name, mime_type, size, caption, uploaded_at
          FROM po_reference_photos
         WHERE po_id = ? AND deleted_at IS NULL
         ORDER BY id ASC`
@@ -399,6 +399,8 @@ function poPhotos(db, poId) {
     .all(poId)
     .map((row) => ({
       id: row.id,
+      poId: row.po_id,
+      poItemId: row.po_item_id || null,
       fileName: row.file_name,
       url: `/api/files/po-reference-photo/${row.id}`,
       mimeType: row.mime_type,
@@ -1180,18 +1182,27 @@ module.exports = function registerProcurementOrderRoutes(router) {
       .get(po.id).c;
     if (used >= PO_PHOTO_MAX_COUNT) throw badRequest(`A purchase order can carry at most ${PO_PHOTO_MAX_COUNT} reference photos.`);
 
+    const rawPoItemId = body.poItemId ?? body.po_item_id ?? null;
+    let poItemId = null;
+    if (rawPoItemId !== null && rawPoItemId !== undefined && String(rawPoItemId).trim() !== '') {
+      poItemId = Number(rawPoItemId);
+      if (!Number.isInteger(poItemId) || poItemId <= 0) throw badRequest('Invalid PO item.');
+      const poItem = ctx.db.prepare('SELECT id FROM po_items WHERE id = ? AND po_id = ?').get(poItemId, po.id);
+      if (!poItem) throw badRequest('The selected PO item does not belong to this order.');
+    }
+
     const saved = saveUpload({ name, data: String(body.data) }, PO_PHOTO_UPLOAD_DIR);
     const caption = String(body.caption || '').trim().slice(0, 200);
     const now = nowIso();
     const result = ctx.db
       .prepare(
-        `INSERT INTO po_reference_photos(po_id, file_name, stored_name, mime_type, size, caption, uploaded_by, uploaded_at)
-         VALUES (?,?,?,?,?,?,?,?)`
+        `INSERT INTO po_reference_photos(po_id, po_item_id, file_name, stored_name, mime_type, size, caption, uploaded_by, uploaded_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
       )
-      .run(po.id, name, saved.stored, mime, saved.size, caption, ctx.user.id, now);
+      .run(po.id, poItemId, name, saved.stored, mime, saved.size, caption, ctx.user.id, now);
     const photoId = Number(result.lastInsertRowid);
-    audit(ctx, 'CREATE', 'po_reference_photo', photoId, null, { poId: po.id, fileName: name, caption });
-    return { id: photoId, url: `/api/files/po-reference-photo/${photoId}`, fileName: name, caption };
+    audit(ctx, 'CREATE', 'po_reference_photo', photoId, null, { poId: po.id, poItemId, fileName: name, caption });
+    return { id: photoId, url: `/api/files/po-reference-photo/${photoId}`, fileName: name, caption, poItemId };
   });
 
   router.delete('/api/procurement/purchase-orders/:id/photos/:photoId', async (ctx) => {

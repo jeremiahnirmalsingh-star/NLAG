@@ -707,6 +707,7 @@ function ensureProcurementSchema(db) {
     CREATE TABLE IF NOT EXISTS po_reference_photos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       po_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+      po_item_id INTEGER REFERENCES po_items(id) ON DELETE SET NULL,
       file_name TEXT NOT NULL,
       stored_name TEXT NOT NULL,
       mime_type TEXT NOT NULL,
@@ -1799,6 +1800,16 @@ function ensureProcurementSchema(db) {
     db.prepare(
       "INSERT INTO settings(key, value) VALUES ('migration.po_flat_discount.v1', '1') ON CONFLICT(key) DO UPDATE SET value = '1'"
     ).run();
+  }
+
+  /* Migration: associate optional PO reference photos with a PO line item. */
+  const migPoReferencePhotoItem = db.prepare("SELECT value FROM settings WHERE key = 'migration.po_reference_photo_item.v1'").get();
+  if (!migPoReferencePhotoItem) {
+    const photoCols = new Set(db.prepare('PRAGMA table_info(po_reference_photos)').all().map((r) => r.name));
+    if (!photoCols.has('po_item_id')) {
+      db.exec('ALTER TABLE po_reference_photos ADD COLUMN po_item_id INTEGER REFERENCES po_items(id) ON DELETE SET NULL');
+    }
+    db.prepare("INSERT INTO settings(key, value) VALUES ('migration.po_reference_photo_item.v1', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
   }
 
   db.prepare(

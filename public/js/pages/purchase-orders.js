@@ -1029,6 +1029,7 @@ export async function renderDetail(ctx, options = {}) {
   const grns = detail.grns || [];
   const invoices = detail.invoices || [];
   const photos = detail.photos || [];
+  const photoItemName = new Map((items || []).map((line) => [Number(line.id), line.itemName]));
   const canManagePhotos = can('po.manage');
   const refresh = () => renderDetail(ctx, { id });
   const act = async (fn, message, type = 'success') => {
@@ -1187,12 +1188,18 @@ export async function renderDetail(ctx, options = {}) {
                       <img src="${esc(photo.url)}" alt="${esc(photo.caption || photo.fileName)}" />
                     </a>
                     <div class="small muted">${esc(photo.caption || photo.fileName)}</div>
+                    ${photo.poItemId ? `<div class="small muted">Item: ${esc(photoItemName.get(Number(photo.poItemId)) || `PO line #${photo.poItemId}`)}</div>` : '<div class="small muted">General PO photo</div>'}
                     ${canManagePhotos ? `<button type="button" class="btn btn-sm btn-ghost" data-remove-photo="${photo.id}" title="Remove photo">${icon('trash')}</button>` : ''}
                   </div>`).join('')
                 : '<div class="hint">No reference photos attached. Photos appear in the print only when attached.</div>'}
             </div>
             ${canManagePhotos && photos.length < 6 ? `
               <form id="po-photo-form" class="form-grid" style="margin-top:12px">
+                <div class="field span-2"><label>PO item (optional)</label>
+                  <select class="select" name="poItemId">
+                    <option value="">General PO photo</option>
+                    ${items.map((line) => `<option value="${line.id}">${esc(line.itemName)}${line.itemCode ? ` (${esc(line.itemCode)})` : ''}</option>`).join('')}
+                  </select></div>
                 <div class="field span-2"><label>Photo (JPEG, PNG or WebP, up to 5 MB)</label>
                   <input class="input" type="file" name="photo" accept="image/jpeg,image/png,image/webp" required /></div>
                 <div class="field span-2"><label>Caption (optional)</label>
@@ -1239,7 +1246,10 @@ export async function renderDetail(ctx, options = {}) {
         mimeType: file.type,
         data,
         caption: photoForm.querySelector('[name=caption]').value.trim(),
-      });
+         poItemId: photoForm.querySelector('[name=poItemId]').value
+           ? Number(photoForm.querySelector('[name=poItemId]').value)
+           : null,
+       });
       toast('Reference photo attached.');
       await refresh();
     } catch (err) {
@@ -1478,6 +1488,9 @@ export async function renderPrint(ctx, options = {}) {
   const po = detail.purchaseOrder;
   const items = detail.items || [];
   const photos = detail.photos || [];
+  const hasItemPhotos = photos.some((photo) => !!photo.poItemId);
+  const generalPhotos = photos.filter((photo) => !photo.poItemId);
+  const photoItemName = new Map((items || []).map((line) => [Number(line.id), line.itemName]));
   const totalQuantity = items.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
   const quantityUnits = [...new Set(items.map((line) => String(line.uomCode || '').trim()).filter(Boolean))];
   const quantitySuffix = quantityUnits.length === 1 ? ` ${quantityUnits[0]}` : '';
@@ -1631,6 +1644,7 @@ export async function renderPrint(ctx, options = {}) {
             <thead><tr>
               <th style="width:5%">S No</th>
               <th>Product Name</th>
+              ${hasItemPhotos ? '<th class="num" style="width:16%">Photo</th>' : ''}
               <th class="num" style="width:6%">Qty</th>
               <th style="width:6%">Units</th>
               <th class="num">UnitPrice</th>
@@ -1661,6 +1675,7 @@ export async function renderPrint(ctx, options = {}) {
                 return `<tr>
                   <td class="num">${i + 1}</td>
                   <td><div class="rp-product-name">${esc(line.itemName)}</div>${details.length ? `<div class="small muted">${details.map(esc).join('<br />')}</div>` : ''}</td>
+                   ${hasItemPhotos ? `<td class="rp-item-photo-cell">${photos.filter((photo) => Number(photo.poItemId) === Number(line.id)).map((photo) => `<img class="rp-item-photo" src="${esc(photo.url)}" alt="${esc(photo.caption || photo.fileName)}" />`).join('') || '<span class="muted">\u2014</span>'}</td>` : ''}
                   <td class="num">${nz(line.quantity) ? num(line.quantity) : ''}</td>
                   <td>${esc(line.uomCode || '')}</td>
                   <td class="num">${moneyIf(line.unitPrice)}</td>
@@ -1682,11 +1697,11 @@ export async function renderPrint(ctx, options = {}) {
         <div class="rp-total-row rp-item-count"><span>Total Quantity</span><span>${num(totalQuantity)}${esc(quantitySuffix)}</span></div>
         <div class="rp-amount-words"><b>Amount in Words :</b> ${esc(amountInWords(po.totalAmount))}</div>
 
-        ${photos.length ? `
+        ${generalPhotos.length ? `
         <div class="rp-reference-photos" id="po-print-photos-section">
           <h3>Reference Photos</h3>
           <div class="rp-photo-strip">
-            ${photos.map((photo) => `<figure>
+            ${generalPhotos.map((photo) => `<figure>
               <img src="${esc(photo.url)}" alt="${esc(photo.caption || photo.fileName)}" />
               ${photo.caption ? `<figcaption>${esc(photo.caption)}</figcaption>` : ''}
             </figure>`).join('')}
@@ -1733,8 +1748,10 @@ export async function renderPrint(ctx, options = {}) {
   const printPhotosToggle = ctx.view.querySelector('#po-print-photos');
   const printPhotosSection = ctx.view.querySelector('#po-print-photos-section');
   const syncPrintPhotos = (include) => {
-    if (!printPhotosSection) return;
-    printPhotosSection.style.display = include ? '' : 'none';
+    if (printPhotosSection) printPhotosSection.style.display = include ? '' : 'none';
+    ctx.view.querySelectorAll('.rp-item-photo').forEach((img) => {
+      img.style.display = include ? '' : 'none';
+    });
     if (printPhotosToggle) printPhotosToggle.checked = !!include;
   };
   printPhotosToggle?.addEventListener('change', (event) => syncPrintPhotos(event.target.checked));
