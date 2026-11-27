@@ -575,7 +575,7 @@ Each phase is additive, independently testable, and must not regress the existin
 - Legacy direct `complete` booking action was removed so every completed trip must pass through driver closure and Transport verification. Service worker cache bumped to `abmdas-shell-v65`.
 
 ### PO reference photos (delivered)
-- Additive table `po_reference_photos` stores optional vendor-facing photographs with soft delete, audit entries and a file under `C:\abmdas-data\uploads\po-reference-photos`. Uploads are limited to six per PO, 5 MB each, JPEG/PNG/WebP with magic-byte validation; no new permission is used (`po.manage` to attach/remove, `po.view` to read).
+- Additive table `po_reference_photos` stores optional vendor-facing photographs with soft delete, audit entries and a file under `C:\abmdas-data\uploads\po-reference-photos`. Uploads are limited to 50 per PO (one per item), 5 MB each, JPEG/PNG/WebP with magic-byte validation; no new permission is used (`po.manage` to attach/remove, `po.view` to read).
 - PO detail has a Reference Photos card for upload from the device (with an optional caption) and removal. `GET /api/procurement/purchase-orders/:id` returns `photos` for both the detail and print screens.
 - The vendor-facing PO print now shows reference photos in an additional **Photo** column against each PO item when they are attached to that item, so vendors can match photos to items. Uploads can be linked to a specific PO item or left as general PO photos; general photos still print in a separate vertical section. The print keeps the "Include reference photos" toggle and confirmation prompt, and preserves the no-QR, no-browser-header/footer, single-A4-page, SGST/CGST/IGST and round-off safeguards. Service worker cache bumped to `abmdas-shell-v67`.
 

@@ -1193,7 +1193,7 @@ export async function renderDetail(ctx, options = {}) {
                   </div>`).join('')
                 : '<div class="hint">No reference photos attached. Photos appear in the print only when attached.</div>'}
             </div>
-            ${canManagePhotos && photos.length < 6 ? `
+            ${canManagePhotos && photos.length < 50 ? `
               <form id="po-photo-form" class="form-grid" style="margin-top:12px">
                 <div class="field span-2"><label>PO item (optional)</label>
                   <select class="select" name="poItemId">

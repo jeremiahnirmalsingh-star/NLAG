@@ -377,7 +377,7 @@ function poDeliveryAssignments() {
 /* ------------------------------------------------------------------ */
 
 const PO_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
-const PO_PHOTO_MAX_COUNT = 6;
+const PO_PHOTO_MAX_COUNT = 50;
 const PO_PHOTO_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
 const PO_PHOTO_UPLOAD_DIR = path.join(DATA_DIR, 'uploads', 'po-reference-photos');
 
