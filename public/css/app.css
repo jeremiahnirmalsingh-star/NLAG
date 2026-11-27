@@ -765,7 +765,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .print-po .rp-signs-single { margin-top: 12px; break-inside: avoid; page-break-inside: avoid; }
   .print-po .rp-signs-single .rp-sign-org { margin-top: 10px; }
   .print-po .rp-signs-single .line { margin-top: 56px; padding-top: 8px; }
-  .print-po .rp-page-number { display: none; }
+  .print-po .rp-page-number { display: block; position: fixed; right: 10mm; bottom: 4mm; font-size: 9px; color: #333; }
   html, body { background: #fff; }
   .sidebar, .topbar, .page-head, .no-print, .toast-stack, .modal-overlay, .dropdown-menu { display: none !important; }
   .main { margin: 0; }

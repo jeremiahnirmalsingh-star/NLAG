@@ -1595,7 +1595,7 @@ export async function renderPrint(ctx, options = {}) {
   const initialOrientation = String((ctx.route.query || {}).orientation || 'portrait').toLowerCase() === 'landscape' ? 'landscape' : 'portrait';
   const applyPageOrientation = (orientation) => {
     const value = orientation === 'landscape' ? 'landscape' : 'portrait';
-    poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:0;@bottom-right{content:counter(page);font-size:9px;color:#333}}}`;
+    poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:0}}`;
     const select = ctx.view.querySelector('#po-print-orientation');
     if (select) select.value = value;
   };
@@ -1747,7 +1747,7 @@ export async function renderPrint(ctx, options = {}) {
             <div class="line">Authorized Signatory</div>
           </div>
         </div>
-        <div class="rp-page-number" aria-hidden="true"></div>
+        <div class="rp-page-number" aria-hidden="true">1</div>
       </div>
     </div>`;
 
