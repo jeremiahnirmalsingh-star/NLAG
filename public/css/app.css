@@ -763,6 +763,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .print-po .rp-section { margin-top: 8px; }
   .print-po .rp-ref-table { margin-top: 4px; }
   .print-po .rp-ref-table th, .print-po .rp-ref-table td { padding: 3px 4px; }
+  .print-po .rp-ref-table th, .print-po .rp-ref-table th.num { text-align: center !important; }
   .print-po .rp-terms-totals { margin-top: 8px; gap: 18px; }
   .print-po .rp-bottom-meta { margin-top: 10px; padding-top: 6px; }
   .print-po .rp-reference-photos { margin-top: 6px; }
