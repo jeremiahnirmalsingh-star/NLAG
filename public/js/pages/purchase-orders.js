@@ -349,6 +349,16 @@ function uomOptions(selected) {
   return `<option value="">\u2014 UOM \u2014</option>${list.map((u) => `<option value="${u.id}" ${String(u.id) === String(selected || '') ? 'selected' : ''}>${esc(u.code)}</option>`).join('')}`;
 }
 
+function lastPriceHintHtml(item) {
+  const last = item && item.lastPrice;
+  if (!last) return '';
+  const bits = [`Last: ${money(last.unitPrice)}`];
+  if (last.poNo) bits.push(esc(last.poNo));
+  if (last.poDate) bits.push(esc(last.poDate));
+  if (last.vendorName) bits.push(esc(last.vendorName));
+  return bits.join(' \u00b7 ');
+}
+
 function poLineRow(items, line = {}) {
   const calc = calcPriceLine(line);
   const label = line.itemName || line.description || 'New line';
@@ -372,7 +382,8 @@ function poLineRow(items, line = {}) {
       <div class="field"><label>Make</label><input class="input" data-make value="${esc(line.make || '')}" placeholder="Make / brand" /></div>
       <div class="field"><label>UOM</label><select class="select" data-uom>${uomOptions(line.uomId)}</select></div>
       <div class="field"><label>Quantity</label><input class="input" data-qty type="number" min="0.01" step="0.01" value="${line.quantity !== undefined ? esc(line.quantity) : '1'}" /></div>
-      <div class="field"><label>Rate</label><input class="input" data-price type="number" min="0" step="0.01" value="${line.unitPrice !== undefined ? esc(line.unitPrice) : ''}" /></div>
+      <div class="field"><label>Rate</label><input class="input" data-price type="number" min="0" step="0.01" value="${line.unitPrice !== undefined ? esc(line.unitPrice) : ''}" />
+        <div class="hint" data-last-price>${lastPriceHintHtml((items || []).find((i) => String(i.id) === String(line.itemId)))}</div></div>
       <div class="field"><label>Discount %</label><input class="input" data-discpct type="number" min="0" max="100" step="0.01" value="${line.discountPercent !== undefined ? esc(line.discountPercent) : '0'}" /></div>
       <div class="field"><label>Flat discount</label><input class="input" data-disamt type="number" min="0" step="0.01" value="${line.discountAmount !== undefined ? esc(line.discountAmount) : '0'}" /></div>
       <div class="field"><label>Tax %</label><input class="input" data-tax type="number" min="0" max="100" step="0.01" value="${line.taxRate !== undefined ? esc(line.taxRate) : '0'}" /></div>
@@ -442,12 +453,19 @@ function recalcPoForm(form) {
 function bindPoLine(row, form, itemList) {
   const lines = form.querySelector('#po-lines') || form.querySelector('#rev-lines');
   const label = row.querySelector('.po-line-label');
+  const priceHint = row.querySelector('[data-last-price]');
   const updateLabel = () => {
     if (!label) return;
     const name = row.querySelector('[data-name]')?.value.trim();
     const desc = row.querySelector('[data-desc]')?.value.trim();
     const chosen = row.querySelector('[data-item]')?.selectedOptions[0]?.textContent.trim();
     label.textContent = name || desc || (chosen && chosen !== '\u2014 Select item \u2014' ? chosen : 'New line');
+  };
+  const updateLastPrice = () => {
+    if (!priceHint) return;
+    const itemId = row.querySelector('[data-item]')?.value;
+    const item = (itemList || []).find((i) => String(i.id) === String(itemId));
+    priceHint.innerHTML = lastPriceHintHtml(item);
   };
   row.querySelector('[data-item]').addEventListener('change', () => {
     const item = itemList.find((i) => String(i.id) === String(row.querySelector('[data-item]').value));
@@ -462,6 +480,7 @@ function bindPoLine(row, form, itemList) {
       if (uomSel && !uomSel.value) uomSel.value = item.uomId;
     }
     updateLabel();
+    updateLastPrice();
     recalcPoForm(form);
   });
   ['[data-name]','[data-desc]'].forEach((sel) => {
@@ -483,6 +502,7 @@ function bindPoLine(row, form, itemList) {
     recalcPoForm(form);
   });
   updateLabel();
+  updateLastPrice();
 }
 
 function readPoLines(form) {
@@ -606,6 +626,8 @@ export async function renderForm(ctx, options = {}) {
     const units = meta.units || [];
     const departments = meta.departments || [];
     const itemList = meta.items || [];
+    const itemPrices = meta.itemPrices || {};
+    for (const item of itemList) item.lastPrice = itemPrices[item.id] || null;
     const uoms = meta.uoms || [];
     window.__poUoms = uoms;
     const addressMeta = await loadPoAddressMeta(units);
@@ -724,6 +746,34 @@ export async function renderForm(ctx, options = {}) {
     const info = form.querySelector('[data-cs-info]');
     let generalTermsTouched = false;
     form.querySelector('[data-general-terms]')?.addEventListener('input', () => { generalTermsTouched = true; });
+
+    /* Commercial terms default to the most recent PO (per vendor when one is
+     * known) and stay editable; typing in a field marks it as intentionally
+     * overridden so later vendor changes do not clobber it. */
+    let commercialTermsTouched = false;
+    const applyLastTerms = (terms) => {
+      if (!terms || commercialTermsTouched) return;
+      ['paymentTerms', 'deliveryTerms', 'terms'].forEach((name) => {
+        const el = form.querySelector(`[name="${name}"]`);
+        if (el && terms[name]) el.value = terms[name];
+      });
+    };
+    const loadVendorTerms = async (vendorId) => {
+      if (!vendorId) return;
+      try {
+        const terms = await api.get(`/api/procurement/purchase-orders/last-terms?vendorId=${encodeURIComponent(vendorId)}`);
+        applyLastTerms(terms);
+      } catch {
+        /* Reference terms are optional; keep whatever is already in the form. */
+      }
+    };
+    ['paymentTerms', 'deliveryTerms', 'terms'].forEach((name) => {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (el) el.addEventListener('input', () => { commercialTermsTouched = true; });
+    });
+    applyLastTerms(meta.lastTerms);
+    form.querySelector('[name="vendorId"]')?.addEventListener('change', (event) => loadVendorTerms(event.target.value));
+
     bindDeliveryFields(form, {
       units: deliveryUnits,
       stores: deliveryStores,
@@ -751,6 +801,7 @@ export async function renderForm(ctx, options = {}) {
       info.innerHTML = selected
         ? `<b>${esc(selected.vendorName)}</b> \u00b7 ${esc(selected.rfqNo)} \u00b7 ${money(selected.totalQuoted)}<br />Lines, prices and taxes will be copied from the awarded quotation.`
         : 'Select a comparative statement to see the awarded vendor.';
+      if (selected) loadVendorTerms(selected.vendorId);
       if (!selected || generalTermsTouched) return;
       const termsField = form.querySelector('[data-general-terms]');
       try {
@@ -858,6 +909,13 @@ export async function renderForm(ctx, options = {}) {
   }
   if (!itemList.length) {
     itemList = detail.items.map((line) => ({ id: line.itemId, name: line.itemName, itemCode: line.itemCode, uomId: line.uomId, uomCode: line.uomCode, standardCost: line.unitPrice }));
+  }
+  try {
+    const priceMeta = await api.get('/api/procurement/purchase-orders/item-prices');
+    const prices = priceMeta.prices || {};
+    for (const item of itemList) item.lastPrice = prices[item.id] || null;
+  } catch {
+    /* Reference prices are optional. */
   }
   const uomMap = {};
   for (const it of itemList) if (it.uomId) uomMap[it.uomId] = it.uomCode;
@@ -1318,6 +1376,13 @@ export async function renderDetail(ctx, options = {}) {
     }
     if (!itemList.length) {
       itemList = items.map((line) => ({ id: line.itemId, name: line.itemName, itemCode: line.itemCode, uomCode: line.uomCode, standardCost: line.unitPrice }));
+    }
+    try {
+      const priceMeta = await api.get('/api/procurement/purchase-orders/item-prices');
+      const prices = priceMeta.prices || {};
+      for (const item of itemList) item.lastPrice = prices[item.id] || null;
+    } catch {
+      /* Reference prices are optional. */
     }
     const formItems = items.map(poLineForForm);
     const headerFlat = poHeaderFlatDiscount(po, items);

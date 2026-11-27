@@ -574,11 +574,15 @@ Each phase is additive, independently testable, and must not regress the existin
 - Attendance now stores shift status, GPS coordinates and an optional selfie in addition to check-in/check-out, worked hours and extra hours over the standard 9-hour day. Manager entries are `APPROVED`; driver self-entries remain `PENDING` until Transport approves.
 - Legacy direct `complete` booking action was removed so every completed trip must pass through driver closure and Transport verification. Service worker cache bumped to `abmdas-shell-v65`.
 
-### PO manual reference and one-page print (delivered)
+### PO manual reference and vendor print (delivered)
 - Each purchase order has a manually entered **Reference** (`purchase_orders.reference`, additive `TEXT NOT NULL DEFAULT ''`, guarded by marker `migration.po_reference.v1`). It is entered on the create and edit forms, saved by create, edit and revise, shown on the detail page and printed on the vendor copy as `Reference :`, between the To block and the Order Items table, when present.
 - The vendor PO flows naturally across as many A4 pages as it needs (portrait or landscape, per the Page setup selector). It is not scaled to fit one page.
 - Page numbers use the CSS `@page` margin box `Page X of Y` (`counter(page)` / `counter(pages)`), printed at the bottom right of every page. A fixed in-flow number was rejected because it repeats `1` on every page.
 - The print margin is 0 at the top and 10 mm sides, 14 mm bottom. A zero top margin is what stops Chrome printing its date/time/URL header and footer (verified in headless Chrome: default and header-suppressed output match). The top gap on every page comes from a repeating table header spacer (`rp-print-frame` / `rp-print-top`, 12 mm), so pages 2 onward do not start at the paper edge.
+
+### PO terms carry-forward and previous pricing reference (delivered)
+- New purchase orders prefill **Payment Terms**, **Delivery Terms** and **Terms & conditions** from the latest non-cancelled PO (`GET /api/procurement/purchase-orders/last-terms`; the same values ship in `/purchase-orders/meta` as `lastTerms`). When a vendor is chosen, direct-mode vendor selection or an awarded comparative statement, the fields refresh from that vendor's latest PO. Every field stays editable; typing in a field marks it as manually overridden so a later vendor change cannot replace the typed value. The PO detail and vendor print already show the saved terms.
+- While an item is chosen on a PO line, the **Rate** field shows a reference hint with the latest committed purchase price for that item, its PO number, PO date and vendor (`GET /api/procurement/purchase-orders/item-prices`, also embedded in meta as `itemPrices`). Draft and cancelled POs are ignored. The hint is informational only; it does not overwrite the rate.
 
 ### PO reference photos (delivered)
 - Additive table `po_reference_photos` stores optional vendor-facing photographs with soft delete, audit entries and a file under `C:\abmdas-data\uploads\po-reference-photos`. Uploads are limited to 50 per PO (one per item), 5 MB each, JPEG/PNG/WebP with magic-byte validation; no new permission is used (`po.manage` to attach/remove, `po.view` to read).

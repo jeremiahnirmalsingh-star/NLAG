@@ -808,6 +808,74 @@ function snapshotPo(db, po, items, reason, userId, now) {
   return revisionNo;
 }
 
+/* Latest commercial terms used as editable defaults for a new PO. When a
+ * vendor is supplied the lookup is restricted to that vendor, so a buyer's
+ * negotiated terms carry forward to that vendor's next order. */
+function latestPoTerms(ctx, unitIds, vendorId = null) {
+  const params = [...unitIds];
+  let vendorFilter = '';
+  if (vendorId) {
+    vendorFilter = ' AND p.vendor_id = ?';
+    params.push(vendorId);
+  }
+  const row = ctx.db
+    .prepare(
+      `SELECT p.po_no, p.vendor_id, p.payment_terms, p.delivery_terms, p.terms
+         FROM purchase_orders p
+        WHERE p.deleted_at IS NULL AND p.status <> 'cancelled'
+          AND p.unit_id IN (${inList(unitIds)})${vendorFilter}
+          AND (COALESCE(p.payment_terms, '') <> ''
+               OR COALESCE(p.delivery_terms, '') <> ''
+               OR COALESCE(p.terms, '') <> '')
+        ORDER BY p.po_date DESC, p.id DESC
+        LIMIT 1`
+    )
+    .get(...params);
+  return row
+    ? {
+        vendorId: row.vendor_id,
+        poNo: row.po_no,
+        paymentTerms: row.payment_terms || '',
+        deliveryTerms: row.delivery_terms || '',
+        terms: row.terms || '',
+      }
+    : { vendorId: null, poNo: '', paymentTerms: '', deliveryTerms: '', terms: '' };
+}
+
+/* Latest committed purchase price for every item, keyed by item id. Drafts and
+ * cancelled orders are ignored so the reference always reflects a real order. */
+function latestItemPrices(ctx, unitIds) {
+  const rows = ctx.db
+    .prepare(
+      `SELECT item_id, unit_price, po_no, po_date, vendor_name
+         FROM (
+           SELECT pi.item_id, pi.unit_price, p.po_no, p.po_date,
+                  v.name AS vendor_name,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY pi.item_id
+                    ORDER BY p.po_date DESC, p.id DESC
+                  ) AS rn
+             FROM po_items pi
+             JOIN purchase_orders p ON p.id = pi.po_id
+             JOIN vendors v ON v.id = p.vendor_id
+            WHERE p.deleted_at IS NULL AND p.status NOT IN ('cancelled', 'draft')
+              AND p.unit_id IN (${inList(unitIds)})
+         ) ranked
+        WHERE rn = 1`
+    )
+    .all(...unitIds);
+  const prices = {};
+  for (const row of rows) {
+    prices[row.item_id] = {
+      unitPrice: round2(row.unit_price),
+      poNo: row.po_no,
+      poDate: row.po_date,
+      vendorName: row.vendor_name,
+    };
+  }
+  return prices;
+}
+
 /* ------------------------------------------------------------------ */
 /* Routes                                                              */
 /* ------------------------------------------------------------------ */
@@ -884,10 +952,28 @@ module.exports = function registerProcurementOrderRoutes(router) {
       departments,
       uoms,
       items,
+      itemPrices: latestItemPrices(ctx, ids),
+      lastTerms: latestPoTerms(ctx, ids),
       generalTerms: helperText(delivery.generalTerms, [[], [ctx], [ctx.db]]),
       statuses: PO_STATUSES.map((value) => ({ value, label: value.replace(/_/g, ' ') })),
       today: today(),
     };
+  });
+
+  /* Editable defaults for the create form: the most recent PO terms, matching
+   * the chosen vendor when a vendorId is supplied. */
+  router.get('/api/procurement/purchase-orders/last-terms', async (ctx) => {
+    auth.guard(ctx.user, 'po.view');
+    const ids = unitScope(ctx);
+    const vendorId = optionalId(ctx.query || {}, 'vendorId');
+    return latestPoTerms(ctx, ids, vendorId);
+  });
+
+  /* Latest committed price per item, shown beside the Rate field as a
+   * reference while a purchase order line is edited. */
+  router.get('/api/procurement/purchase-orders/item-prices', async (ctx) => {
+    auth.guard(ctx.user, 'po.view');
+    return { prices: latestItemPrices(ctx, unitScope(ctx)) };
   });
 
   /* ------------------------- Purchase orders ---------------------- */
