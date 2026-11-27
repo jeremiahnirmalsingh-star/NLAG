@@ -1,7 +1,7 @@
 /* ABMDAS service worker — network first, cache as offline fallback.
  * The app is served from a local/office server, so fresh files always win;
  * the cache only exists so the shell still opens if the server is briefly down. */
-const CACHE = 'abmdas-shell-v73';
+const CACHE = 'abmdas-shell-v74';
 const SHELL = [
   '/',
   '/index.html',
