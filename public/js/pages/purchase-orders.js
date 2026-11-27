@@ -1589,6 +1589,7 @@ export async function renderPrint(ctx, options = {}) {
       </div>
       <div class="page-actions">
         <a class="btn" href="#/purchase-orders/${po.id}">${icon('arrowLeft')} Back to PO</a>
+        ${photos.length ? `<label class="po-print-photo-toggle no-print"><input type="checkbox" id="po-print-photos" checked /> Include reference photos</label>` : ''}
         <button class="btn" data-print>${icon('printer')} Print</button>
         <button class="btn btn-primary" data-pdf>${icon('download')} Save as PDF</button>
       </div>
@@ -1682,7 +1683,7 @@ export async function renderPrint(ctx, options = {}) {
         <div class="rp-amount-words"><b>Amount in Words :</b> ${esc(amountInWords(po.totalAmount))}</div>
 
         ${photos.length ? `
-        <div class="rp-reference-photos">
+        <div class="rp-reference-photos" id="po-print-photos-section">
           <h3>Reference Photos</h3>
           <div class="rp-photo-strip">
             ${photos.map((photo) => `<figure>
@@ -1729,9 +1730,27 @@ export async function renderPrint(ctx, options = {}) {
       </div>
     </div>`;
 
-  ctx.view.querySelector('[data-print]').addEventListener('click', () => window.print());
+  const printPhotosToggle = ctx.view.querySelector('#po-print-photos');
+  const printPhotosSection = ctx.view.querySelector('#po-print-photos-section');
+  const syncPrintPhotos = (include) => {
+    if (!printPhotosSection) return;
+    printPhotosSection.style.display = include ? '' : 'none';
+    if (printPhotosToggle) printPhotosToggle.checked = !!include;
+  };
+  printPhotosToggle?.addEventListener('change', (event) => syncPrintPhotos(event.target.checked));
+
+  const askPrintPhotos = () => {
+    if (!photos.length || !printPhotosSection) return true;
+    return confirm('Print the attached reference photos too?');
+  };
+
+  ctx.view.querySelector('[data-print]').addEventListener('click', () => {
+    syncPrintPhotos(askPrintPhotos());
+    window.print();
+  });
   ctx.view.querySelector('[data-pdf]').addEventListener('click', () => {
     toast('Use "Save as PDF" in the print dialog.', 'info');
+    syncPrintPhotos(askPrintPhotos());
     setTimeout(() => window.print(), 350);
   });
 
@@ -1740,6 +1759,7 @@ export async function renderPrint(ctx, options = {}) {
   if (autoPrint) {
     setTimeout(() => {
       toast('Opening print dialog. Choose "Save as PDF" to save or email the PO.', 'info');
+      syncPrintPhotos(askPrintPhotos());
       window.print();
     }, 800);
   }
