@@ -699,6 +699,7 @@ export async function renderForm(ctx, options = {}) {
                 ${field({ label: 'Delivery Terms', name: 'deliveryTerms', value: '', span: true, placeholder: 'Place and mode of delivery' })}
                 ${field({ label: 'Terms & conditions', name: 'terms', type: 'textarea', value: '', span: true })}
                 ${field({ label: 'Notes', name: 'notes', type: 'textarea', value: '', span: true })}
+                ${field({ label: 'Reference', name: 'reference', value: '', span: true, placeholder: 'Manually entered reference, printed on the PO' })}
               </div>
             </div>
           </div>
@@ -807,6 +808,7 @@ export async function renderForm(ctx, options = {}) {
         deliveryTerms: form.deliveryTerms.value.trim(),
         terms: form.terms.value.trim(),
         notes: form.notes.value.trim(),
+        reference: form.reference ? form.reference.value.trim() : '',
         discountPercent: Number(form.discountPercent?.value) || 0,
         flatDiscountAmount: Number(form.discountAmount?.value) || 0,
         discountAmount: Number(form.discountAmount?.value) || 0,
@@ -894,6 +896,7 @@ export async function renderForm(ctx, options = {}) {
                 ${field({ label: 'Delivery Terms', name: 'deliveryTerms', value: po.deliveryTerms || '', span: true })}
                 ${field({ label: 'Terms & conditions', name: 'terms', type: 'textarea', value: po.terms || '', span: true })}
                 ${field({ label: 'Notes', name: 'notes', type: 'textarea', value: po.notes || '', span: true })}
+                ${field({ label: 'Reference', name: 'reference', value: po.reference || '', span: true, placeholder: 'Manually entered reference, printed on the PO' })}
               </div>
             </div>
           </div>
@@ -996,6 +999,7 @@ export async function renderForm(ctx, options = {}) {
         deliveryTerms: form.deliveryTerms.value.trim(),
         terms: form.terms.value.trim(),
         notes: form.notes.value.trim(),
+        reference: form.reference ? form.reference.value.trim() : '',
         discountPercent: Number(form.discountPercent?.value) || 0,
         flatDiscountAmount: Number(form.discountAmount?.value) || 0,
         discountAmount: Number(form.discountAmount?.value) || 0,
@@ -1146,6 +1150,7 @@ export async function renderDetail(ctx, options = {}) {
               <div class="row"><span class="muted" style="width:130px">PO date</span><span>${fmtDate(po.poDate)}</span></div>
               <div class="row"><span class="muted" style="width:130px">Delivery date</span><span>${po.deliveryDate ? fmtDate(po.deliveryDate) : '\u2014'}</span></div>
               <div class="row"><span class="muted" style="width:130px">Payment terms</span><span>${esc(po.paymentTerms || '\u2014')}</span></div>
+              <div class="row"><span class="muted" style="width:130px">Reference</span><span>${esc(po.reference || '\u2014')}</span></div>
               <div class="row"><span class="muted" style="width:130px">Delivery terms</span><span>${esc(po.deliveryTerms || '\u2014')}</span></div>
               <div class="row"><span class="muted" style="width:130px">Source</span><span>${po.comparativeStatementId ? 'Comparative statement' : 'Direct entry'}</span></div>
               <div class="row"><span class="muted" style="width:130px">RFQ</span><span>${po.rfqId ? `<a href="#/sourcing/${po.rfqId}">${esc(po.rfqNo)}</a>` : '\u2014'}</span></div>
@@ -1598,6 +1603,7 @@ export async function renderPrint(ctx, options = {}) {
     poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:0}@page abmdas-po{size:A4 ${value};margin:0}}`;
     const select = ctx.view.querySelector('#po-print-orientation');
     if (select) select.value = value;
+    ctx.view.querySelector('.print-po')?.classList.toggle('is-landscape', value === 'landscape');
   };
   applyPageOrientation(initialOrientation);
   document.head.appendChild(poPrintPageStyle);
@@ -1627,6 +1633,7 @@ export async function renderPrint(ctx, options = {}) {
           <div class="rp-doc-meta">
             <span><span class="k">Doc No :</span> ${esc(po.poNo)}</span>
             <span><span class="k">Doc Date :</span> ${esc(docDate)}</span>
+            ${po.reference ? `<span><span class="k">Reference :</span> ${esc(po.reference)}</span>` : ''}
           </div>
         </div>
 
@@ -1747,9 +1754,31 @@ export async function renderPrint(ctx, options = {}) {
             <div class="line">Authorized Signatory</div>
           </div>
         </div>
-        <div class="rp-page-number" aria-hidden="true">1</div>
+        <div class="rp-page-footer">Page 1 of 1</div>
       </div>
     </div>`;
+
+  /* The PO is scaled (never cropped) so the whole document, including the
+   * signature band and footer, lands on one A4 sheet; the page footer then reads
+   * Page 1 of 1 correctly. */
+  const fitPoToPage = () => {
+    const sheet = ctx.view.querySelector('.print-po .report-sheet');
+    if (!sheet) return;
+    sheet.style.zoom = '';
+    const landscape = ctx.view.querySelector('.print-po')?.classList.contains('is-landscape');
+    const pageHeightPx = (landscape ? 210 : 297) * 96 / 25.4;
+    const contentHeightPx = sheet.offsetHeight;
+    const scale = contentHeightPx > pageHeightPx ? Math.max(0.5, (pageHeightPx / contentHeightPx) * 0.98) : 1;
+    sheet.style.zoom = scale < 1 ? String(scale) : '';
+  };
+  const onBeforePrint = () => {
+    if (!ctx.view.isConnected) {
+      window.removeEventListener('beforeprint', onBeforePrint);
+      return;
+    }
+    fitPoToPage();
+  };
+  window.addEventListener('beforeprint', onBeforePrint);
 
   const printPhotosToggle = ctx.view.querySelector('#po-print-photos');
   const printPhotosSection = ctx.view.querySelector('#po-print-photos-section');
@@ -1762,6 +1791,7 @@ export async function renderPrint(ctx, options = {}) {
       cell.style.display = include ? '' : 'none';
     });
     if (printPhotosToggle) printPhotosToggle.checked = !!include;
+    fitPoToPage();
   };
   printPhotosToggle?.addEventListener('change', (event) => syncPrintPhotos(event.target.checked));
 
@@ -1770,8 +1800,12 @@ export async function renderPrint(ctx, options = {}) {
     return confirm('Print the attached reference photos too?');
   };
 
-  ctx.view.querySelector('#po-print-orientation')?.addEventListener('change', (event) => applyPageOrientation(event.target.value));
+  ctx.view.querySelector('#po-print-orientation')?.addEventListener('change', (event) => {
+    applyPageOrientation(event.target.value);
+    fitPoToPage();
+  });
   applyPageOrientation(initialOrientation);
+  fitPoToPage();
   ctx.view.querySelector('[data-print]').addEventListener('click', () => {
     syncPrintPhotos(askPrintPhotos());
     window.print();

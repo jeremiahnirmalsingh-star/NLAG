@@ -455,6 +455,7 @@ function poOut(row) {
     loadingCharges: round2(row.loading_charges),
     otherCharges: round2(row.other_charges),
     paymentTerms: row.payment_terms || '',
+    reference: row.reference || '',
     deliveryTerms: row.delivery_terms || '',
     terms: row.terms || '',
     notes: row.notes || '',
@@ -1090,10 +1091,10 @@ module.exports = function registerProcurementOrderRoutes(router) {
              comparative_statement_id, quotation_id, vendor_id, po_date, delivery_date, status,
              subtotal, tax_amount, discount_percent, flat_discount_amount, discount_amount, total_amount,
              freight_charges, loading_charges, other_charges,
-             payment_terms, delivery_terms, terms, notes,
+             payment_terms, delivery_terms, terms, notes, reference,
              round_off, ${poDeliveryColumnList()},
              created_by, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,'draft',0,0,?,?,?,0,?,?,?,?,?,?,?, ?,${poDeliveryPlaceholders()},?,?,?)`
+           VALUES (?,?,?,?,?,?,?,?,?,?,'draft',0,0,?,?,?,0,?,?,?,?,?,?,?,?, ?,${poDeliveryPlaceholders()},?,?,?)`
         )
         .run(
           poNo, unitId, departmentId, requisitionId, rfqId,
@@ -1104,7 +1105,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
           Number(body.freightCharges) || 0, Number(body.loadingCharges) || 0, Number(body.otherCharges) || 0,
           paymentTerms,
           optionalText(body, 'deliveryTerms', 500), optionalText(body, 'terms', 2000),
-          optionalText(body, 'notes', 1000),
+          optionalText(body, 'notes', 1000), optionalText(body, 'reference', 200),
           0, ...poDeliveryParams(deliveryValues), ctx.user.id, now, now
         );
       id = Number(res.lastInsertRowid);
@@ -1272,7 +1273,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
         .prepare(
           `UPDATE purchase_orders SET po_date=?, delivery_date=?, freight_charges=?, loading_charges=?, other_charges=?,
               discount_percent=?, flat_discount_amount=?, discount_amount=?,
-              payment_terms=?, delivery_terms=?, terms=?, notes=?,
+              payment_terms=?, delivery_terms=?, terms=?, notes=?, reference=?,
               ${poDeliveryAssignments()}, updated_at=? WHERE id=?`
         )
         .run(
@@ -1285,6 +1286,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
           body.deliveryTerms === undefined ? po.delivery_terms : optionalText(body, 'deliveryTerms', 500),
           body.terms === undefined ? po.terms : optionalText(body, 'terms', 2000),
           body.notes === undefined ? po.notes : optionalText(body, 'notes', 1000),
+          body.reference === undefined ? (po.reference || '') : optionalText(body, 'reference', 200),
           ...poDeliveryParams(deliveryValues), now, po.id
         );
       if (lines) replacePoItems(ctx.db, po.id, lines, now);
@@ -1386,7 +1388,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
       ctx.db
         .prepare(
           `UPDATE purchase_orders SET po_date=?, delivery_date=?, payment_terms=?, delivery_terms=?,
-             terms=?, notes=?, freight_charges=?, loading_charges=?, other_charges=?,
+             terms=?, notes=?, reference=?, freight_charges=?, loading_charges=?, other_charges=?,
              discount_percent=?, flat_discount_amount=?, discount_amount=?,
             ${poDeliveryAssignments()}, updated_at=? WHERE id=?`
         )
@@ -1396,6 +1398,7 @@ module.exports = function registerProcurementOrderRoutes(router) {
           body.deliveryTerms === undefined ? po.delivery_terms : optionalText(body, 'deliveryTerms', 500),
           body.terms === undefined ? po.terms : optionalText(body, 'terms', 2000),
           body.notes === undefined ? po.notes : optionalText(body, 'notes', 1000),
+          body.reference === undefined ? (po.reference || '') : optionalText(body, 'reference', 200),
           body.freightCharges === undefined ? po.freight_charges : (Number(body.freightCharges) || 0),
           body.loadingCharges === undefined ? po.loading_charges : (Number(body.loadingCharges) || 0),
           body.otherCharges === undefined ? po.other_charges : (Number(body.otherCharges) || 0),

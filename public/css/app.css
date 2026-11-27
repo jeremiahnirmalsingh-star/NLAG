@@ -655,6 +655,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rp-letterhead p { margin: 1px 0; }
 .rp-letterhead .rp-title-center { margin-top: 12px; font-size: 13px; letter-spacing: .12em; }
 .rp-page-number { display: none; }
+.rp-page-footer { margin-top: 8px; text-align: right; font-size: 9px; color: #333; }
+.print-po .report-sheet { width: 210mm; box-sizing: border-box; }
+.print-po.is-landscape .report-sheet { width: 297mm; }
 .rp-party-grid { display: grid; grid-template-columns: 1fr; gap: 10px; font-size: 10px; }
 .rp-party h3 { font-size: 11px; margin: 0 0 5px; color: #123c69; border-bottom: 1px solid #c9d4e0; padding-bottom: 3px; }
 .rp-party div { margin: 2px 0; }
@@ -765,7 +768,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .print-po .rp-signs-single { margin-top: 12px; break-inside: avoid; page-break-inside: avoid; }
   .print-po .rp-signs-single .rp-sign-org { margin-top: 10px; }
   .print-po .rp-signs-single .line { margin-top: 56px; padding-top: 8px; }
-  .print-po .rp-page-number { display: block; position: fixed; right: 10mm; bottom: 4mm; font-size: 9px; color: #333; }
+  .print-po .report-sheet { width: 210mm !important; box-sizing: border-box; }
+  .print-po.is-landscape .report-sheet { width: 297mm !important; }
+  .print-po .rp-page-footer { display: block; }
   html, body { background: #fff; }
   .sidebar, .topbar, .page-head, .no-print, .toast-stack, .modal-overlay, .dropdown-menu { display: none !important; }
   .main { margin: 0; }

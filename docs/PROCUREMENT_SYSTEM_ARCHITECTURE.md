@@ -574,6 +574,11 @@ Each phase is additive, independently testable, and must not regress the existin
 - Attendance now stores shift status, GPS coordinates and an optional selfie in addition to check-in/check-out, worked hours and extra hours over the standard 9-hour day. Manager entries are `APPROVED`; driver self-entries remain `PENDING` until Transport approves.
 - Legacy direct `complete` booking action was removed so every completed trip must pass through driver closure and Transport verification. Service worker cache bumped to `abmdas-shell-v65`.
 
+### PO manual reference and one-page print (delivered)
+- Each purchase order has a manually entered **Reference** (`purchase_orders.reference`, additive `TEXT NOT NULL DEFAULT ''`, guarded by marker `migration.po_reference.v1`). It is entered on the create and edit forms, saved by create, edit and revise, shown on the detail page and printed in the document header as `Reference :` when present.
+- The vendor print is fitted to exactly one A4 sheet before printing (portrait 210 mm or landscape 297 mm, per the Page setup selector). The sheet is scaled down, never cropped, when its natural height exceeds the page, so the signature band and footer are always visible. The footer reads `Page 1 of 1`, which is correct by construction.
+- Browser page-counter CSS (`counter(page)`) was tested and rejected: it printed as `0`, and a fixed element repeats on every page. The one-page fit avoids depending on it.
+
 ### PO reference photos (delivered)
 - Additive table `po_reference_photos` stores optional vendor-facing photographs with soft delete, audit entries and a file under `C:\abmdas-data\uploads\po-reference-photos`. Uploads are limited to 50 per PO (one per item), 5 MB each, JPEG/PNG/WebP with magic-byte validation; no new permission is used (`po.manage` to attach/remove, `po.view` to read).
 - PO detail has a Reference Photos card for upload from the device (with an optional caption) and removal. `GET /api/procurement/purchase-orders/:id` returns `photos` for both the detail and print screens.

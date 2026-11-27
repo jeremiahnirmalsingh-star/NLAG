@@ -1802,6 +1802,16 @@ function ensureProcurementSchema(db) {
     ).run();
   }
 
+  /* Migration: manually entered reference on each purchase order. */
+  const migPoReference = db.prepare("SELECT value FROM settings WHERE key = 'migration.po_reference.v1'").get();
+  if (!migPoReference) {
+    const poHeadCols = new Set(db.prepare('PRAGMA table_info(purchase_orders)').all().map((r) => r.name));
+    if (!poHeadCols.has('reference')) {
+      db.exec("ALTER TABLE purchase_orders ADD COLUMN reference TEXT NOT NULL DEFAULT ''");
+    }
+    db.prepare("INSERT INTO settings(key, value) VALUES ('migration.po_reference.v1', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
+  }
+
   /* Migration: associate optional PO reference photos with a PO line item. */
   const migPoReferencePhotoItem = db.prepare("SELECT value FROM settings WHERE key = 'migration.po_reference_photo_item.v1'").get();
   if (!migPoReferencePhotoItem) {
