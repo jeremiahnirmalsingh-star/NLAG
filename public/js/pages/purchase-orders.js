@@ -1528,6 +1528,7 @@ export async function renderPrint(ctx, options = {}) {
   /* Zero values are suppressed completely - label and value cell - on the
    * vendor-facing purchase order. */
   const nz = (value) => round2(value) !== 0;
+  const hasTaxRate = items.some((line) => nz(line.taxRate));
   const moneyIf = (value) => (nz(value) ? money(value) : '');
   const rateIf = (value) => (nz(value) ? `${num(value)}%` : '');
   const totalRow = (label, value) => (nz(value)
@@ -1661,13 +1662,7 @@ export async function renderPrint(ctx, options = {}) {
               <th class="num">UnitPrice</th>
               ${hasLineDiscount ? '<th class="num">Disc</th>' : ''}
               <th class="num">Value</th>
-              ${hasSgstRate ? '<th class="num">SGST</th>' : ''}
-              ${hasCgstRate ? '<th class="num">CGST</th>' : ''}
-              ${hasIgst ? '<th class="num">IGST</th>' : ''}
-              ${hasSgstAmount ? '<th class="num">SGST Amnt</th>' : ''}
-              ${hasCgstAmount ? '<th class="num">CGST Amnt</th>' : ''}
-              ${hasIgstAmount ? '<th class="num">IGST Amnt</th>' : ''}
-              ${hasLineTotal ? '<th class="num">Total Amount</th>' : ''}
+               ${hasTaxRate ? '<th class="num" style="width:6%">Tax %</th>' : ''}
             </tr></thead>
             <tbody>
               ${items.map((line, i) => {
@@ -1692,13 +1687,13 @@ export async function renderPrint(ctx, options = {}) {
                   <td class="num">${moneyIf(line.unitPrice)}</td>
                   ${hasLineDiscount ? `<td class="num">${moneyIf(line.discountAmount)}${nz(line.discountPercent) ? `<div class="small muted">${num(line.discountPercent)}%</div>` : ''}</td>` : ''}
                   <td class="num">${moneyIf(line.taxableAmount)}</td>
+                   ${hasTaxRate ? `<td class="num">${rateIf(line.taxRate)}</td>` : ''}
                   ${hasSgstRate ? `<td class="num">${rateIf(sgstRate)}</td>` : ''}
                   ${hasCgstRate ? `<td class="num">${rateIf(cgstRate)}</td>` : ''}
                   ${hasIgst ? `<td class="num">${rateIf(igstRate)}</td>` : ''}
                   ${hasSgstAmount ? `<td class="num">${moneyIf(split.sgst)}</td>` : ''}
                   ${hasCgstAmount ? `<td class="num">${moneyIf(split.cgst)}</td>` : ''}
                   ${hasIgstAmount ? `<td class="num">${moneyIf(split.igst)}</td>` : ''}
-                  ${hasLineTotal ? `<td class="num">${moneyIf(line.totalAmount)}</td>` : ''}
                 </tr>`;
               }).join('')}
             </tbody>
