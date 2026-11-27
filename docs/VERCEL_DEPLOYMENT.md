@@ -106,6 +106,16 @@ The local machine must stay powered on, the ABMDAS supervisor must be running, a
 
 ---
 
+## Free cloud hosting — Oracle Cloud Always Free (optional)
+
+A ready-to-use deployment kit lives in `deploy/oracle/`:
+- `setup.sh` — installs Node 20, PM2, firewall rules on an Ubuntu VM
+- `deploy.ps1` — pushes `server/`, `public/` and `C:\abmdas-data` from your PC to the VM
+- `abmdas.service` — systemd unit (alternative to PM2)
+- `README.md` — full step-by-step (Oracle signup, VCN, instance, deploy, Cloudflare Tunnel for HTTPS)
+
+The free tier gives 4 ARM cores, 24 GB RAM and 200 GB storage — more than enough for this app (current DB is ~2.5 MB). No code changes are needed; only `vercel.json`'s rewrite URL changes to point at the VM.
+
 ## Day-to-day operations
 
 ### Restart the backend
