@@ -1542,12 +1542,12 @@ export async function renderPrint(ctx, options = {}) {
   const lineTaxable = round2(items.reduce((sum, line) => sum + (Number(line.taxableAmount) || 0), 0));
   const taxableValue = Number(po.subtotal) || lineTaxable;
   const hasSplitGst = sameState && items.some((line) => nz(line.taxRate));
-  const hasIgst = !sameState && items.some((line) => nz(line.taxRate));
-  const hasSgstRate = hasSplitGst;
-  const hasCgstRate = hasSplitGst;
-  const hasSgstAmount = nz(gstTotals.sgst);
-  const hasCgstAmount = nz(gstTotals.cgst);
-  const hasIgstAmount = nz(gstTotals.igst);
+  const hasIgst = false;
+  const hasSgstRate = false;
+  const hasCgstRate = false;
+  const hasSgstAmount = false;
+  const hasCgstAmount = false;
+  const hasIgstAmount = false;
   const hasLineTotal = items.some((line) => nz(line.totalAmount));
 
   const docDate = /^\d{4}-\d{2}-\d{2}/.test(String(po.poDate || ''))
@@ -1591,7 +1591,14 @@ export async function renderPrint(ctx, options = {}) {
   document.getElementById('po-print-page-style')?.remove();
   const poPrintPageStyle = document.createElement('style');
   poPrintPageStyle.id = 'po-print-page-style';
-  poPrintPageStyle.textContent = '@media print{@page{size:A4 portrait;margin:0}}';
+  const initialOrientation = String((ctx.route.query || {}).orientation || 'portrait').toLowerCase() === 'landscape' ? 'landscape' : 'portrait';
+  const applyPageOrientation = (orientation) => {
+    const value = orientation === 'landscape' ? 'landscape' : 'portrait';
+    poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:0}}`;
+    const select = ctx.view.querySelector('#po-print-orientation');
+    if (select) select.value = value;
+  };
+  applyPageOrientation(initialOrientation);
   document.head.appendChild(poPrintPageStyle);
 
   ctx.view.innerHTML = `
@@ -1603,6 +1610,10 @@ export async function renderPrint(ctx, options = {}) {
       <div class="page-actions">
         <a class="btn" href="#/purchase-orders/${po.id}">${icon('arrowLeft')} Back to PO</a>
         ${photos.length ? `<label class="po-print-photo-toggle no-print"><input type="checkbox" id="po-print-photos" checked /> Include reference photos</label>` : ''}
+          <select class="select no-print" id="po-print-orientation" title="Page setup">
+            <option value="portrait">Portrait</option>
+            <option value="landscape">Landscape</option>
+          </select>
         <button class="btn" data-print>${icon('printer')} Print</button>
         <button class="btn btn-primary" data-pdf>${icon('download')} Save as PDF</button>
       </div>
@@ -1764,6 +1775,8 @@ export async function renderPrint(ctx, options = {}) {
     return confirm('Print the attached reference photos too?');
   };
 
+  ctx.view.querySelector('#po-print-orientation')?.addEventListener('change', (event) => applyPageOrientation(event.target.value));
+  applyPageOrientation(initialOrientation);
   ctx.view.querySelector('[data-print]').addEventListener('click', () => {
     syncPrintPhotos(askPrintPhotos());
     window.print();
