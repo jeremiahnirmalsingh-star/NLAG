@@ -468,7 +468,15 @@ export async function renderForm(ctx, options = {}) {
           <div class="card">
             <div class="card-head"><div><h3>Product Image &amp; Datasheet</h3><div class="sub">JPEG, PNG or WebP image, or PDF datasheet. Up to 5 MB each.</div></div></div>
             <div class="form-section" data-attachments>
-              ${id ? attachmentsHtml(extras.attachments) : '<div class="hint">Save the item first, then attach its image and datasheet.</div>'}
+              ${id ? attachmentsHtml(extras.attachments) : `<div class="hint">You can choose a file now; it will be attached automatically after the item is saved.</div>
+              <div class="inline-form mt-12">
+                <select class="select" data-att-kind>
+                  <option value="image">Product image</option>
+                  <option value="datasheet">Technical datasheet</option>
+                  <option value="compliance">Compliance certificate</option>
+                </select>
+                <input class="input" type="file" data-att-file accept="image/jpeg,image/png,image/webp,application/pdf" />
+              </div>`}
             </div>
           </div>
         </div>
@@ -688,6 +696,21 @@ export async function renderForm(ctx, options = {}) {
       } else {
         const res = await api.post('/api/procurement/items', data);
         toast(`Item created (${res.itemCode}).`);
+        const pendingFile = document.querySelector('[data-att-file]')?.files?.[0];
+        if (pendingFile) {
+          try {
+            const pendingData = await readBase64(pendingFile);
+            await api.post(`/api/procurement/items/${res.id}/attachments`, {
+              kind: document.querySelector('[data-att-kind]')?.value || 'image',
+              name: pendingFile.name,
+              mime: pendingFile.type,
+              data: pendingData,
+            });
+            toast('File attached.');
+          } catch (err) {
+            toast(err.message || 'File upload failed.', 'error');
+          }
+        }
       }
       navigate('/items');
     } catch (e) {
