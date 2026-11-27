@@ -654,8 +654,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rp-letterhead h2 { font-size: 17px; margin: 0 0 3px; color: #123c69; }
 .rp-letterhead p { margin: 1px 0; }
 .rp-letterhead .rp-title-center { margin-top: 12px; font-size: 13px; letter-spacing: .12em; }
-.rp-page-number { display: none; }
-.rp-page-footer { margin-top: 8px; text-align: right; font-size: 9px; color: #333; }
 .print-po .report-sheet { width: 210mm; box-sizing: border-box; }
 .print-po.is-landscape .report-sheet { width: 297mm; }
 .rp-party-grid { display: grid; grid-template-columns: 1fr; gap: 10px; font-size: 10px; }
@@ -749,12 +747,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   @page { size: A4 portrait; margin: 12mm; }
   .print-landscape { page: abmdas-landscape; }
   @page abmdas-landscape { size: A4 landscape; margin: 10mm; }
-  /* PO print uses a zero page margin (also injected on the print document for
-     browsers without named-page support) so Chrome omits its date/time/URL
-     header and footer; internal padding preserves the printed content area. */
-  @page abmdas-po { size: A4 portrait; margin: 0; }
+  /* PO print uses real A4 margins so the "Page X of Y" margin box can print at
+     the bottom; the orientation and margins are also injected on the document
+     by purchase-orders.js. */
+  @page abmdas-po { size: A4 portrait; margin: 12mm 10mm 14mm; }
   .print-po { page: abmdas-po; }
-  .print-po .report-sheet { padding: 10mm !important; }
+  .print-po .report-sheet { padding: 0 !important; }
   .print-po .rp-letterhead { min-height: 56px; margin: 6px 0 10px; }
   .print-po .rp-letterhead .rp-logo { height: 52px; }
   .print-po .rp-party-grid { gap: 6px; }
@@ -768,9 +766,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .print-po .rp-signs-single { margin-top: 12px; break-inside: avoid; page-break-inside: avoid; }
   .print-po .rp-signs-single .rp-sign-org { margin-top: 10px; }
   .print-po .rp-signs-single .line { margin-top: 56px; padding-top: 8px; }
-  .print-po .report-sheet { width: 210mm !important; box-sizing: border-box; }
-  .print-po.is-landscape .report-sheet { width: 297mm !important; }
-  .print-po .rp-page-footer { display: block; }
+  .print-po .report-sheet { width: 100% !important; }
   html, body { background: #fff; }
   .sidebar, .topbar, .page-head, .no-print, .toast-stack, .modal-overlay, .dropdown-menu { display: none !important; }
   .main { margin: 0; }

@@ -1600,7 +1600,7 @@ export async function renderPrint(ctx, options = {}) {
   const initialOrientation = String((ctx.route.query || {}).orientation || 'portrait').toLowerCase() === 'landscape' ? 'landscape' : 'portrait';
   const applyPageOrientation = (orientation) => {
     const value = orientation === 'landscape' ? 'landscape' : 'portrait';
-    poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:0}@page abmdas-po{size:A4 ${value};margin:0}}`;
+    poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:12mm 10mm 14mm}@page abmdas-po{size:A4 ${value};margin:12mm 10mm 14mm;@bottom-right{content:"Page " counter(page) " of " counter(pages);font-size:9px;color:#333}}}`;
     const select = ctx.view.querySelector('#po-print-orientation');
     if (select) select.value = value;
     ctx.view.querySelector('.print-po')?.classList.toggle('is-landscape', value === 'landscape');
@@ -1754,31 +1754,8 @@ export async function renderPrint(ctx, options = {}) {
             <div class="line">Authorized Signatory</div>
           </div>
         </div>
-        <div class="rp-page-footer">Page 1 of 1</div>
       </div>
     </div>`;
-
-  /* The PO is scaled (never cropped) so the whole document, including the
-   * signature band and footer, lands on one A4 sheet; the page footer then reads
-   * Page 1 of 1 correctly. */
-  const fitPoToPage = () => {
-    const sheet = ctx.view.querySelector('.print-po .report-sheet');
-    if (!sheet) return;
-    sheet.style.zoom = '';
-    const landscape = ctx.view.querySelector('.print-po')?.classList.contains('is-landscape');
-    const pageHeightPx = (landscape ? 210 : 297) * 96 / 25.4;
-    const contentHeightPx = sheet.offsetHeight;
-    const scale = contentHeightPx > pageHeightPx ? Math.max(0.5, (pageHeightPx / contentHeightPx) * 0.98) : 1;
-    sheet.style.zoom = scale < 1 ? String(scale) : '';
-  };
-  const onBeforePrint = () => {
-    if (!ctx.view.isConnected) {
-      window.removeEventListener('beforeprint', onBeforePrint);
-      return;
-    }
-    fitPoToPage();
-  };
-  window.addEventListener('beforeprint', onBeforePrint);
 
   const printPhotosToggle = ctx.view.querySelector('#po-print-photos');
   const printPhotosSection = ctx.view.querySelector('#po-print-photos-section');
@@ -1791,7 +1768,6 @@ export async function renderPrint(ctx, options = {}) {
       cell.style.display = include ? '' : 'none';
     });
     if (printPhotosToggle) printPhotosToggle.checked = !!include;
-    fitPoToPage();
   };
   printPhotosToggle?.addEventListener('change', (event) => syncPrintPhotos(event.target.checked));
 
@@ -1800,12 +1776,8 @@ export async function renderPrint(ctx, options = {}) {
     return confirm('Print the attached reference photos too?');
   };
 
-  ctx.view.querySelector('#po-print-orientation')?.addEventListener('change', (event) => {
-    applyPageOrientation(event.target.value);
-    fitPoToPage();
-  });
+  ctx.view.querySelector('#po-print-orientation')?.addEventListener('change', (event) => applyPageOrientation(event.target.value));
   applyPageOrientation(initialOrientation);
-  fitPoToPage();
   ctx.view.querySelector('[data-print]').addEventListener('click', () => {
     syncPrintPhotos(askPrintPhotos());
     window.print();
