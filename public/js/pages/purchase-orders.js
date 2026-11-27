@@ -1644,7 +1644,7 @@ export async function renderPrint(ctx, options = {}) {
             <thead><tr>
               <th style="width:5%">S No</th>
               <th>Product Name</th>
-              ${hasItemPhotos ? '<th class="num" style="width:16%">Photo</th>' : ''}
+              ${hasItemPhotos ? '<th class="num po-print-photo-col" style="width:16%">Photo</th>' : ''}
               <th class="num" style="width:6%">Qty</th>
               <th style="width:6%">Units</th>
               <th class="num">UnitPrice</th>
@@ -1675,7 +1675,7 @@ export async function renderPrint(ctx, options = {}) {
                 return `<tr>
                   <td class="num">${i + 1}</td>
                   <td><div class="rp-product-name">${esc(line.itemName)}</div>${details.length ? `<div class="small muted">${details.map(esc).join('<br />')}</div>` : ''}</td>
-                   ${hasItemPhotos ? `<td class="rp-item-photo-cell">${photos.filter((photo) => Number(photo.poItemId) === Number(line.id)).map((photo) => `<img class="rp-item-photo" src="${esc(photo.url)}" alt="${esc(photo.caption || photo.fileName)}" />`).join('') || '<span class="muted">\u2014</span>'}</td>` : ''}
+                   ${hasItemPhotos ? `<td class="rp-item-photo-cell po-print-photo-col">${photos.filter((photo) => Number(photo.poItemId) === Number(line.id)).map((photo) => `<img class="rp-item-photo" src="${esc(photo.url)}" alt="${esc(photo.caption || photo.fileName)}" />`).join('') || '<span class="muted">\u2014</span>'}</td>` : ''}
                   <td class="num">${nz(line.quantity) ? num(line.quantity) : ''}</td>
                   <td>${esc(line.uomCode || '')}</td>
                   <td class="num">${moneyIf(line.unitPrice)}</td>
@@ -1751,6 +1751,9 @@ export async function renderPrint(ctx, options = {}) {
     if (printPhotosSection) printPhotosSection.style.display = include ? '' : 'none';
     ctx.view.querySelectorAll('.rp-item-photo').forEach((img) => {
       img.style.display = include ? '' : 'none';
+    });
+    ctx.view.querySelectorAll('.po-print-photo-col').forEach((cell) => {
+      cell.style.display = include ? '' : 'none';
     });
     if (printPhotosToggle) printPhotosToggle.checked = !!include;
   };
