@@ -1634,7 +1634,6 @@ export async function renderPrint(ctx, options = {}) {
           <div class="rp-doc-meta">
             <span><span class="k">Doc No :</span> ${esc(po.poNo)}</span>
             <span><span class="k">Doc Date :</span> ${esc(docDate)}</span>
-            ${po.reference ? `<span><span class="k">Reference :</span> ${esc(po.reference)}</span>` : ''}
           </div>
         </div>
 
@@ -1658,6 +1657,7 @@ export async function renderPrint(ctx, options = {}) {
           </div>
         </div>
 
+        ${po.reference ? `<div class="rp-reference-line" style="margin:8px 0 4px;font-size:12px"><span class="k"><b>Reference :</b></span> ${esc(po.reference)}</div>` : ''}
         <div class="rp-section">
           <h3>Order Items</h3>
           <table class="rp-table rp-ref-table">
