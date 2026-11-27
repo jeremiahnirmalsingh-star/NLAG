@@ -1747,7 +1747,7 @@ export async function renderPrint(ctx, options = {}) {
             <div class="line">Authorized Signatory</div>
           </div>
         </div>
-        <div class="rp-page-number" aria-hidden="true">1</div>
+        <div class="rp-page-number" aria-hidden="true"></div>
       </div>
     </div>`;
 

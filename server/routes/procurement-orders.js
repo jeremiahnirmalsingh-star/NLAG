@@ -750,19 +750,45 @@ function grnLineAmounts(poLine, quantity) {
 }
 
 function replacePoItems(db, poId, lines, now) {
-  db.prepare('DELETE FROM po_items WHERE po_id = ?').run(poId);
+  const existing = db.prepare('SELECT id FROM po_items WHERE po_id = ?').all(poId);
+  const existingIds = new Set(existing.map((row) => Number(row.id)));
+  const keep = new Set();
   const insert = db.prepare(
     `INSERT INTO po_items(po_id, requisition_item_id, item_id, item_name, description, model_no, make, uom_id,
        quantity, unit_price, discount_percent, flat_discount_amount, discount_amount, tax_rate, tax_inclusive,
        taxable_amount, tax_amount, total_amount, created_at, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
+  const update = db.prepare(
+    `UPDATE po_items SET requisition_item_id=?, item_id=?, item_name=?, description=?, model_no=?, make=?, uom_id=?,
+       quantity=?, unit_price=?, discount_percent=?, flat_discount_amount=?, discount_amount=?, tax_rate=?, tax_inclusive=?,
+       taxable_amount=?, tax_amount=?, total_amount=?, updated_at=?
+     WHERE id=? AND po_id=?`
+  );
   for (const line of lines) {
-    insert.run(
-      poId, line.requisitionItemId || null, line.itemId, line.itemName || line.description, line.description, line.modelNo || null, line.make || null, line.uomId,
-      line.quantity, line.unitPrice, line.discountPercent || 0, line.flatDiscountAmount || 0, line.discountAmount || 0,
-      line.taxRate, line.taxInclusive ? 1 : 0, line.taxableAmount || 0, line.taxAmount, line.totalAmount, now, now
-    );
+    const lineId = line.id ? Number(line.id) : null;
+    if (lineId && existingIds.has(lineId)) {
+      update.run(
+        line.requisitionItemId || null, line.itemId, line.itemName || line.description, line.description, line.modelNo || null, line.make || null, line.uomId,
+        line.quantity, line.unitPrice, line.discountPercent || 0, line.flatDiscountAmount || 0, line.discountAmount || 0,
+        line.taxRate, line.taxInclusive ? 1 : 0, line.taxableAmount || 0, line.taxAmount, line.totalAmount,
+        now, lineId, poId
+      );
+      keep.add(lineId);
+    } else {
+      const res = insert.run(
+        poId, line.requisitionItemId || null, line.itemId, line.itemName || line.description, line.description, line.modelNo || null, line.make || null, line.uomId,
+        line.quantity, line.unitPrice, line.discountPercent || 0, line.flatDiscountAmount || 0, line.discountAmount || 0,
+        line.taxRate, line.taxInclusive ? 1 : 0, line.taxableAmount || 0, line.taxAmount, line.totalAmount, now, now
+      );
+      keep.add(Number(res.lastInsertRowid));
+    }
+  }
+  for (const row of existing) {
+    if (!keep.has(Number(row.id))) {
+      db.prepare('UPDATE po_reference_photos SET po_item_id = NULL WHERE po_id = ? AND po_item_id = ?').run(poId, row.id);
+      db.prepare('DELETE FROM po_items WHERE id = ? AND po_id = ?').run(row.id, poId);
+    }
   }
 }
 
