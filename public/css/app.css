@@ -655,6 +655,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rp-letterhead p { margin: 1px 0; }
 .rp-letterhead .rp-title-center { margin-top: 12px; font-size: 13px; letter-spacing: .12em; }
 .print-po .report-sheet { width: 210mm; box-sizing: border-box; }
+.print-po .rp-print-frame { width: 100%; border-collapse: collapse; }
+.print-po .rp-print-frame > tbody > tr > td, .print-po .rp-print-frame > thead > tr > td { padding: 0; }
+.print-po .rp-print-top { height: 0; }
 .print-po.is-landscape .report-sheet { width: 297mm; }
 .rp-party-grid { display: grid; grid-template-columns: 1fr; gap: 10px; font-size: 10px; }
 .rp-party h3 { font-size: 11px; margin: 0 0 5px; color: #123c69; border-bottom: 1px solid #c9d4e0; padding-bottom: 3px; }
@@ -750,9 +753,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   /* PO print uses real A4 margins so the "Page X of Y" margin box can print at
      the bottom; the orientation and margins are also injected on the document
      by purchase-orders.js. */
-  @page abmdas-po { size: A4 portrait; margin: 12mm 10mm 14mm; }
+  @page abmdas-po { size: A4 portrait; margin: 0 10mm 14mm; }
   .print-po { page: abmdas-po; }
   .print-po .report-sheet { padding: 0 !important; }
+  .print-po .rp-print-top { height: 12mm; }
   .print-po .rp-letterhead { min-height: 56px; margin: 6px 0 10px; }
   .print-po .rp-letterhead .rp-logo { height: 52px; }
   .print-po .rp-party-grid { gap: 6px; }

@@ -1600,7 +1600,7 @@ export async function renderPrint(ctx, options = {}) {
   const initialOrientation = String((ctx.route.query || {}).orientation || 'portrait').toLowerCase() === 'landscape' ? 'landscape' : 'portrait';
   const applyPageOrientation = (orientation) => {
     const value = orientation === 'landscape' ? 'landscape' : 'portrait';
-    poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:12mm 10mm 14mm}@page abmdas-po{size:A4 ${value};margin:12mm 10mm 14mm;@bottom-right{content:"Page " counter(page) " of " counter(pages);font-size:9px;color:#333}}}`;
+    poPrintPageStyle.textContent = `@media print{@page{size:A4 ${value};margin:0 10mm 14mm}@page abmdas-po{size:A4 ${value};margin:0 10mm 14mm;@bottom-right{content:"Page " counter(page) " of " counter(pages);font-size:9px;color:#333}}}`;
     const select = ctx.view.querySelector('#po-print-orientation');
     if (select) select.value = value;
     ctx.view.querySelector('.print-po')?.classList.toggle('is-landscape', value === 'landscape');
@@ -1628,6 +1628,7 @@ export async function renderPrint(ctx, options = {}) {
 
     <div class="print-report print-po">
       <div class="report-sheet card" style="box-shadow:var(--shadow)">
+        <table class="rp-print-frame"><thead><tr><td><div class="rp-print-top"></div></td></tr></thead><tbody><tr><td>
         <div class="rp-topbar">
           <span class="rp-original">ORIGINAL</span>
           <div class="rp-doc-meta">
@@ -1754,6 +1755,7 @@ export async function renderPrint(ctx, options = {}) {
             <div class="line">Authorized Signatory</div>
           </div>
         </div>
+        </td></tr></tbody></table>
       </div>
     </div>`;
 
