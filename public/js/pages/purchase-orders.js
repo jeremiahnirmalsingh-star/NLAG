@@ -1116,6 +1116,7 @@ export async function renderDetail(ctx, options = {}) {
         ${actions.canReceive ? `<a class="btn btn-primary" href="#/grns/new?poId=${po.id}">${icon('database')} Record Receipt</a>` : ''}
         ${actions.canInvoice ? `<a class="btn" href="#/invoices/new?poId=${po.id}">${icon('file')} Raise Invoice</a>` : ''}
         ${actions.canRevise ? `<button class="btn" type="button" data-revise>${icon('edit')} Revise</button>` : ''}
+        ${['issued', 'partially_received'].includes(po.status) && can('po.manage') ? `<button class="btn" type="button" data-amend>${icon('edit')} Create Amendment</button>` : ''}
         ${actions.canCancel ? `<button class="btn btn-danger" type="button" data-cancel>${icon('xCircle')} Cancel</button>` : ''}
         ${actions.canDelete ? `<button class="btn btn-danger" type="button" data-delete>${icon('trash')} Delete</button>` : ''}
       </div>
@@ -1241,6 +1242,8 @@ export async function renderDetail(ctx, options = {}) {
           </div>
         </div>
 
+        <div id="po-amendments"></div>
+
         <div class="card" id="po-photos-card">
           <div class="card-head"><div><h3>Reference Photos</h3><div class="sub">Optional photos printed on the purchase order when attached</div></div></div>
           <div class="form-section">
@@ -1364,6 +1367,64 @@ export async function renderDetail(ctx, options = {}) {
       await api.del(`/api/procurement/purchase-orders/${id}`);
       navigate('/purchase-orders');
     }, 'Draft purchase order deleted.');
+  });
+
+  const loadAmendments = async () => {
+    const box = ctx.view.querySelector('#po-amendments');
+    if (!box) return;
+    try {
+      const data = await api.get(`/api/procurement/purchase-orders/${id}/amendments`);
+      if (!data.amendments.length) {
+        box.innerHTML = '';
+        return;
+      }
+      box.innerHTML = `<div class="card">
+        <div class="card-head"><div><h3>Amendments</h3><div class="sub">${esc(data.root.poNo)} is unchanged. Each amendment is a separate revised PO with its own number.</div></div></div>
+        <div class="form-section">${data.amendments.map((a) => `
+          <div style="margin-bottom:16px">
+            <div class="row"><b>${esc(a.poNo)}</b>&nbsp;${statusOf(a.status, PO_STATUS)}&nbsp;<span class="muted small">${esc(a.amendmentNo)} \u00b7 ${a.issuedAt ? fmtDate(a.issuedAt) : 'draft'}</span></div>
+            <div class="small" style="margin:6px 0">Reason: ${esc(a.reason)}</div>
+            ${a.changes.length
+              ? `<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Section</th><th>Field</th><th>Old value</th><th>New value</th></tr></thead><tbody>${a.changes.map((c) => `<tr><td>${esc(c.section)}</td><td>${esc(c.field)}</td><td>${esc(c.oldValue)}</td><td>${esc(c.newValue)}</td></tr>`).join('')}</tbody></table></div>`
+              : '<div class="small muted">No field changes recorded yet. Changes are logged when the amendment is issued.</div>'}
+          </div>`).join('')}
+        </div>
+      </div>`;
+    } catch {
+      box.innerHTML = '';
+    }
+  };
+  loadAmendments();
+
+  ctx.view.querySelector('[data-amend]')?.addEventListener('click', () => {
+    modal({
+      title: `Create amendment for ${po.poNo}`,
+      subtitle: 'The original PO stays unchanged. The amendment opens as a draft you can edit.',
+      body: `<div class="field"><label>Amendment reason<span class="req">*</span></label>
+          <textarea class="textarea" data-amd-reason rows="3" placeholder="e.g. Increase quantity due to site requirement."></textarea></div>
+        <div class="alert alert-danger hidden" data-amd-err style="margin-top:10px"></div>`,
+      footer: `<button class="btn" data-modal-close>Cancel</button><button class="btn btn-primary" data-save>Create amendment</button>`,
+      onMount(el, close) {
+        el.querySelector('[data-save]').addEventListener('click', async () => {
+          const errBox = el.querySelector('[data-amd-err]');
+          const reason = el.querySelector('[data-amd-reason]').value.trim();
+          if (!reason) {
+            errBox.textContent = 'An amendment reason is required.';
+            errBox.classList.remove('hidden');
+            return;
+          }
+          try {
+            const res = await api.post(`/api/procurement/purchase-orders/${id}/amendments`, { reason });
+            close();
+            toast(`${res.poNo} created as a draft.`);
+            navigate(`/purchase-orders/${res.id}/edit`);
+          } catch (err) {
+            errBox.textContent = err.message || 'Could not create the amendment.';
+            errBox.classList.remove('hidden');
+          }
+        });
+      },
+    });
   });
 
   ctx.view.querySelector('[data-revise]')?.addEventListener('click', async () => {

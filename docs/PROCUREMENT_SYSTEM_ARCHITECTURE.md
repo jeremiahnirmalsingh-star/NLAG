@@ -580,6 +580,14 @@ Each phase is additive, independently testable, and must not regress the existin
 - Page numbers use the CSS `@page` margin box `Page X of Y` (`counter(page)` / `counter(pages)`), printed at the bottom right of every page. A fixed in-flow number was rejected because it repeats `1` on every page.
 - The print margin is 0 at the top and 10 mm sides, 14 mm bottom. A zero top margin is what stops Chrome printing its date/time/URL header and footer (verified in headless Chrome: default and header-suppressed output match). The top gap on every page comes from a repeating table header spacer (`rp-print-frame` / `rp-print-top`, 12 mm), so pages 2 onward do not start at the paper edge.
 
+### PO amendments A1, A2… (delivered)
+- **Create Amendment** (issued or partially received PO, `po.manage`) asks for a mandatory reason and copies the current issued version into a new draft numbered `<PO>-A1`, `-A2`… Each amendment is a separate `purchase_orders` row linked by `amendment_of_po_id` (root PO), `amendment_source_po_id` (version it was copied from), `amendment_no` and `amendment_reason`. Receipts and invoice quantities are reset to zero on the copy.
+- The original PO is never edited. The amendment is changed in the existing draft editor (quantity, rate, delivery date, description, terms, taxes), then issued with the existing Issue action.
+- On issue, `po_amendment_changes` stores the change log: section, field, old value and new value. The detail page shows it under **Amendments**.
+- Amendments are created from the latest issued version, so A2 includes A1's changes. Only one amendment can be in draft at a time.
+- Not in scope: an approval chain, and copying reference photos to the amendment.
+- Migration marker `migration.po_amendments.v1`.
+
 ### PO terms carry-forward and previous pricing reference (delivered)
 - New purchase orders prefill **Payment Terms**, **Delivery Terms** and **Terms & conditions** from the latest non-cancelled PO (`GET /api/procurement/purchase-orders/last-terms`; the same values ship in `/purchase-orders/meta` as `lastTerms`). When a vendor is chosen, direct-mode vendor selection or an awarded comparative statement, the fields refresh from that vendor's latest PO. Every field stays editable; typing in a field marks it as manually overridden so a later vendor change cannot replace the typed value. The PO detail and vendor print already show the saved terms.
 - While an item is chosen on a PO line, the **Rate** field shows a reference hint with the latest committed purchase price for that item, its PO number, PO date and vendor (`GET /api/procurement/purchase-orders/item-prices`, also embedded in meta as `itemPrices`). Draft and cancelled POs are ignored. The hint is informational only; it does not overwrite the rate.

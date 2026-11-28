@@ -808,6 +808,114 @@ function snapshotPo(db, po, items, reason, userId, now) {
   return revisionNo;
 }
 
+/* ---------------------------- Amendments --------------------------- */
+const AMENDMENT_RESET_PO_COLUMNS = [
+  'id', 'po_no', 'status', 'issued_by', 'issued_at', 'closed_at', 'cancelled_by', 'cancelled_at',
+  'cancel_reason', 'created_by', 'created_at', 'updated_at', 'revision_no', 'deleted_at', 'deleted_by',
+  'delete_reason', 'amendment_of_po_id', 'amendment_source_po_id', 'amendment_no', 'amendment_reason',
+];
+const AMENDMENT_RESET_ITEM_COLUMNS = [
+  'id', 'po_id', 'received_quantity', 'rejected_quantity', 'invoiced_quantity', 'created_at', 'updated_at',
+];
+const AMENDMENT_HEADER_FIELDS = [
+  ['Purchase order date', 'po_date'], ['Delivery date', 'delivery_date'], ['Payment terms', 'payment_terms'],
+  ['Delivery terms', 'delivery_terms'], ['Terms & conditions', 'terms'], ['Notes', 'notes'],
+  ['Reference', 'reference'], ['Header discount %', 'discount_percent'], ['Header discount amount', 'discount_amount'],
+  ['Freight charges', 'freight_charges'], ['Loading charges', 'loading_charges'], ['Other charges', 'other_charges'],
+  ['Round off', 'round_off'], ['Total amount', 'total_amount'],
+];
+const AMENDMENT_LINE_FIELDS = [
+  ['Item name', 'item_name'], ['Description', 'description'], ['Model no', 'model_no'], ['Make', 'make'],
+  ['UOM', 'uom_id'], ['Quantity', 'quantity'], ['Rate', 'unit_price'], ['Discount %', 'discount_percent'],
+  ['Flat discount', 'flat_discount_amount'], ['Tax %', 'tax_rate'], ['Tax inclusive', 'tax_inclusive'],
+  ['Line total', 'total_amount'],
+];
+
+function amendmentRootId(po) {
+  return po.amendment_of_po_id || po.id;
+}
+
+function latestIssuedVersion(db, rootId) {
+  return db
+    .prepare(
+      `SELECT * FROM purchase_orders
+        WHERE (id = ? OR amendment_of_po_id = ?) AND deleted_at IS NULL
+          AND status IN ('issued', 'partially_received')
+        ORDER BY CAST(SUBSTR(amendment_no, 2) AS INTEGER) DESC, id DESC
+        LIMIT 1`
+    )
+    .get(rootId, rootId);
+}
+
+function copyPoForAmendment(db, source, rootPoNo, amendmentNo, reason, userId, now) {
+  const headerCols = db.prepare('PRAGMA table_info(purchase_orders)').all()
+    .map((c) => c.name).filter((n) => !AMENDMENT_RESET_PO_COLUMNS.includes(n));
+  const headerList = headerCols.join(', ');
+  const created = db
+    .prepare(
+      `INSERT INTO purchase_orders(po_no, status, created_by, created_at, updated_at, revision_no,
+          amendment_of_po_id, amendment_source_po_id, amendment_no, amendment_reason, ${headerList})
+       SELECT ?, 'draft', ?, ?, ?, 0, ?, ?, ?, ?, ${headerList} FROM purchase_orders WHERE id = ?`
+    )
+    .run(
+      `${rootPoNo}-${amendmentNo}`, userId, now, now,
+      source.amendment_of_po_id || source.id, source.id, amendmentNo, reason, source.id
+    );
+  const newId = Number(created.lastInsertRowid);
+  const itemCols = db.prepare('PRAGMA table_info(po_items)').all()
+    .map((c) => c.name).filter((n) => !AMENDMENT_RESET_ITEM_COLUMNS.includes(n));
+  const itemList = itemCols.join(', ');
+  db.prepare(
+    `INSERT INTO po_items(po_id, received_quantity, rejected_quantity, invoiced_quantity, created_at, updated_at, ${itemList})
+     SELECT ?, 0, 0, 0, ?, ?, ${itemList} FROM po_items WHERE po_id = ? ORDER BY id`
+  ).run(newId, now, now, source.id);
+  return newId;
+}
+
+function amendmentValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Number(value)))) {
+    return String(Number(value));
+  }
+  return String(value).trim();
+}
+
+function recordAmendmentChanges(db, source, amendment, userId, now) {
+  const insert = db.prepare(
+    `INSERT INTO po_amendment_changes(po_id, amendment_no, section, field, old_value, new_value, changed_by, changed_at)
+     VALUES (?,?,?,?,?,?,?,?)`
+  );
+  const log = (section, field, oldValue, newValue) => {
+    insert.run(amendment.id, amendment.amendment_no, section, field, amendmentValue(oldValue), amendmentValue(newValue), userId, now);
+  };
+  for (const [label, column] of AMENDMENT_HEADER_FIELDS) {
+    if (amendmentValue(source[column]) !== amendmentValue(amendment[column])) {
+      log('Header', label, source[column], amendment[column]);
+    }
+  }
+  const sourceLines = db.prepare('SELECT * FROM po_items WHERE po_id = ? ORDER BY id').all(source.id);
+  const amendmentLines = db.prepare('SELECT * FROM po_items WHERE po_id = ? ORDER BY id').all(amendment.id);
+  const count = Math.max(sourceLines.length, amendmentLines.length);
+  for (let i = 0; i < count; i += 1) {
+    const before = sourceLines[i];
+    const after = amendmentLines[i];
+    const section = `Line ${i + 1}`;
+    if (!before) {
+      log(section, 'Line', '', `Added: ${after.item_name || after.description}`);
+      continue;
+    }
+    if (!after) {
+      log(section, 'Line', `${before.item_name || before.description}`, 'Removed');
+      continue;
+    }
+    for (const [label, column] of AMENDMENT_LINE_FIELDS) {
+      if (amendmentValue(before[column]) !== amendmentValue(after[column])) {
+        log(`${section} · ${after.item_name || after.description}`, label, before[column], after[column]);
+      }
+    }
+  }
+}
+
 /* Latest commercial terms used as editable defaults for a new PO. When a
  * vendor is supplied the lookup is restricted to that vendor, so a buyer's
  * negotiated terms carry forward to that vendor's next order. */
@@ -1426,6 +1534,11 @@ module.exports = function registerProcurementOrderRoutes(router) {
           .prepare("UPDATE rfqs SET status='closed', closed_at=COALESCE(closed_at, ?), updated_at=? WHERE id=?")
           .run(now, now, po.rfq_id);
       }
+      if (po.amendment_source_po_id) {
+        const source = ctx.db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(po.amendment_source_po_id);
+        const amendment = ctx.db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(po.id);
+        recordAmendmentChanges(ctx.db, source, amendment, ctx.user.id, now);
+      }
     });
     notify(
       [po.issued_by || po.created_by],
@@ -1437,6 +1550,77 @@ module.exports = function registerProcurementOrderRoutes(router) {
       status: 'issued', requisitionId: po.requisition_id, rfqId: po.rfq_id,
     });
     return { ok: true, status: 'issued' };
+  });
+
+  router.post('/api/procurement/purchase-orders/:id/amendments', async (ctx) => {
+    auth.guard(ctx.user, 'po.manage');
+    const po = getPo(ctx, ctx.params.id);
+    const reason = requireText(ctx.body || {}, 'reason', 'Amendment reason', 1000);
+    const rootId = amendmentRootId(po);
+    const root = ctx.db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(rootId);
+    const source = latestIssuedVersion(ctx.db, rootId);
+    if (!source) throw new HttpError(400, 'Only issued purchase orders can be amended.');
+    const openDraft = ctx.db
+      .prepare(
+        "SELECT po_no FROM purchase_orders WHERE amendment_of_po_id = ? AND status = 'draft' AND deleted_at IS NULL"
+      )
+      .get(rootId);
+    if (openDraft) {
+      throw new HttpError(400, `${openDraft.po_no} is already in draft. Issue or delete it before creating another amendment.`);
+    }
+    const next = ctx.db
+      .prepare('SELECT COALESCE(MAX(CAST(SUBSTR(amendment_no, 2) AS INTEGER)), 0) AS n FROM purchase_orders WHERE amendment_of_po_id = ?')
+      .get(rootId).n + 1;
+    const amendmentNo = `A${next}`;
+    const now = nowIso();
+    let newId = null;
+    transaction(ctx.db, () => {
+      newId = copyPoForAmendment(ctx.db, source, root.po_no, amendmentNo, reason, ctx.user.id, now);
+    });
+    audit(ctx, 'CREATE', 'purchase_order', newId, null, {
+      amendmentNo, sourcePoNo: source.po_no, reason,
+    });
+    return { id: newId, poNo: `${root.po_no}-${amendmentNo}`, amendmentNo };
+  });
+
+  router.get('/api/procurement/purchase-orders/:id/amendments', async (ctx) => {
+    auth.guard(ctx.user, 'po.view');
+    const po = getPo(ctx, ctx.params.id);
+    const rootId = amendmentRootId(po);
+    const root = ctx.db.prepare('SELECT id, po_no FROM purchase_orders WHERE id = ?').get(rootId);
+    const rows = ctx.db
+      .prepare(
+        `SELECT id, po_no, amendment_no, status, amendment_reason, issued_at, created_at
+           FROM purchase_orders
+          WHERE amendment_of_po_id = ? AND deleted_at IS NULL
+          ORDER BY CAST(SUBSTR(amendment_no, 2) AS INTEGER)`
+      )
+      .all(rootId);
+    const changes = ctx.db
+      .prepare(
+        `SELECT po_id, section, field, old_value, new_value, changed_at
+           FROM po_amendment_changes
+          WHERE po_id IN (SELECT id FROM purchase_orders WHERE amendment_of_po_id = ?)
+          ORDER BY id`
+      )
+      .all(rootId);
+    return {
+      root: { id: root.id, poNo: root.po_no },
+      amendments: rows.map((row) => ({
+        id: row.id,
+        poNo: row.po_no,
+        amendmentNo: row.amendment_no,
+        status: row.status,
+        reason: row.amendment_reason,
+        issuedAt: row.issued_at,
+        createdAt: row.created_at,
+        changes: changes
+          .filter((c) => c.po_id === row.id)
+          .map((c) => ({
+            section: c.section, field: c.field, oldValue: c.old_value, newValue: c.new_value, changedAt: c.changed_at,
+          })),
+      })),
+    };
   });
 
   router.post('/api/procurement/purchase-orders/:id/revise', async (ctx) => {

@@ -1812,6 +1812,30 @@ function ensureProcurementSchema(db) {
     db.prepare("INSERT INTO settings(key, value) VALUES ('migration.po_reference.v1', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
   }
 
+  /* Migration: PO amendments (A1, A2...) are separate purchase orders linked to the original, plus a change log. */
+  const migPoAmendments = db.prepare("SELECT value FROM settings WHERE key = 'migration.po_amendments.v1'").get();
+  if (!migPoAmendments) {
+    const poCols = new Set(db.prepare('PRAGMA table_info(purchase_orders)').all().map((r) => r.name));
+    if (!poCols.has('amendment_of_po_id')) db.exec('ALTER TABLE purchase_orders ADD COLUMN amendment_of_po_id INTEGER REFERENCES purchase_orders(id)');
+    if (!poCols.has('amendment_source_po_id')) db.exec('ALTER TABLE purchase_orders ADD COLUMN amendment_source_po_id INTEGER REFERENCES purchase_orders(id)');
+    if (!poCols.has('amendment_no')) db.exec("ALTER TABLE purchase_orders ADD COLUMN amendment_no TEXT NOT NULL DEFAULT ''");
+    if (!poCols.has('amendment_reason')) db.exec("ALTER TABLE purchase_orders ADD COLUMN amendment_reason TEXT NOT NULL DEFAULT ''");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS po_amendment_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        po_id INTEGER NOT NULL REFERENCES purchase_orders(id),
+        amendment_no TEXT NOT NULL,
+        section TEXT NOT NULL,
+        field TEXT NOT NULL,
+        old_value TEXT NOT NULL DEFAULT '',
+        new_value TEXT NOT NULL DEFAULT '',
+        changed_by INTEGER REFERENCES users(id),
+        changed_at TEXT NOT NULL
+      );
+    `);
+    db.prepare("INSERT INTO settings(key, value) VALUES ('migration.po_amendments.v1', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
+  }
+
   /* Migration: associate optional PO reference photos with a PO line item. */
   const migPoReferencePhotoItem = db.prepare("SELECT value FROM settings WHERE key = 'migration.po_reference_photo_item.v1'").get();
   if (!migPoReferencePhotoItem) {
